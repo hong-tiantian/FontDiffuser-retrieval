@@ -1,0 +1,23 @@
+name: fontdiffuser
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu117
+      - torch==1.13.1+cu117
+      - torchvision==0.14.1+cu117
+      - torchaudio==0.13.1+cu117
+      - numpy<2
+      - transformers==4.33.1
+      - accelerate==0.23.0
+      - diffusers==0.22.0
+      - gradio==4.8.0
+      - pyyaml
+      - pygame
+      - opencv-python
+      - info-nce-pytorch
+      - kornia
+      - pillow
+      - tqdm

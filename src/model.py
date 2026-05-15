@@ -22,6 +22,52 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         self.unet = unet
         self.style_encoder = style_encoder
         self.content_encoder = content_encoder
+
+    # --- CALLI-RAG BEGIN: convert 5-slot retrieval images into content-encoder features ---
+    def _build_retrieval_unet_inputs(self, retrieval_inputs, content_images):
+        if retrieval_inputs is None:
+            return None
+
+        unet_inputs = {}
+        for key in ("slot_ids", "role_ids", "target_struct", "mask"):
+            if key not in retrieval_inputs:
+                raise KeyError(f"retrieval_inputs missing required key: {key}")
+            value = retrieval_inputs[key]
+            unet_inputs[key] = value.to(content_images.device) if torch.is_tensor(value) else value
+
+        if "refs" in retrieval_inputs:
+            refs = retrieval_inputs["refs"]
+            unet_inputs["refs"] = refs.to(device=content_images.device, dtype=content_images.dtype)
+            return unet_inputs
+
+        if "ref_images" not in retrieval_inputs:
+            raise KeyError("retrieval_inputs must contain either 'refs' or 'ref_images'.")
+
+        ref_images = retrieval_inputs["ref_images"].to(
+            device=content_images.device,
+            dtype=content_images.dtype,
+        )
+        if ref_images.dim() != 5:
+            raise ValueError(
+                f"ref_images must be [B, 5, 3, H, W], got {tuple(ref_images.shape)}"
+            )
+
+        batch_size, n_slots, channels, height, width = ref_images.shape
+        ref_images_flat = ref_images.reshape(batch_size * n_slots, channels, height, width)
+        with torch.no_grad():
+            _, ref_residual_features = self.content_encoder(ref_images_flat)
+        if len(ref_residual_features) < 4:
+            raise ValueError("content_encoder did not return enough residual feature levels.")
+        ref_feature = ref_residual_features[-4]
+        unet_inputs["refs"] = ref_feature.reshape(
+            batch_size,
+            n_slots,
+            ref_feature.shape[1],
+            ref_feature.shape[2],
+            ref_feature.shape[3],
+        )
+        return unet_inputs
+    # --- CALLI-RAG END ---
     
     def forward(
         self, 
@@ -30,6 +76,9 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         style_images,
         content_images,
         content_encoder_downsample_size,
+        # --- CALLI-RAG BEGIN: optional retrieval adapter inputs ---
+        retrieval_inputs=None,
+        # --- CALLI-RAG END ---
     ):
         style_img_feature, _, _ = self.style_encoder(style_images)
     
@@ -45,12 +94,21 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
 
         input_hidden_states = [style_img_feature, content_residual_features, \
                                style_hidden_states, style_content_res_features]
+        # --- CALLI-RAG BEGIN: prepare retrieval features for UNet ---
+        retrieval_unet_inputs = self._build_retrieval_unet_inputs(
+            retrieval_inputs=retrieval_inputs,
+            content_images=content_images,
+        )
+        # --- CALLI-RAG END ---
 
         out = self.unet(
             x_t, 
             timesteps, 
             encoder_hidden_states=input_hidden_states,
             content_encoder_downsample_size=content_encoder_downsample_size,
+            # --- CALLI-RAG BEGIN: pass optional retrieval features ---
+            retrieval_inputs=retrieval_unet_inputs,
+            # --- CALLI-RAG END ---
         )
         noise_pred = out[0]
         offset_out_sum = out[1]

@@ -1,6 +1,9 @@
 import torch
 from torch import nn
 from torchvision.ops import DeformConv2d
+# --- CALLI-RAG BEGIN: retrieval adapter optional typing ---
+from typing import Optional
+# --- CALLI-RAG END ---
 
 from .attention import (SpatialTransformer, 
                         OffsetRefStrucInter, 
@@ -506,6 +509,9 @@ class StyleRSIUpBlock2D(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
         self.num_layers = num_layers
+        # --- CALLI-RAG BEGIN: optional retrieval adapter attachment point ---
+        self.retrieval_adapter = None
+        # --- CALLI-RAG END ---
 
         if add_upsample:
             self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels)])
@@ -539,10 +545,25 @@ class StyleRSIUpBlock2D(nn.Module):
         temb=None,
         encoder_hidden_states=None,
         upsample_size=None,
+        # --- CALLI-RAG BEGIN: optional retrieval inputs for offset-path residual ---
+        retrieval_inputs: Optional[dict] = None,
+        # --- CALLI-RAG END ---
     ):
         total_offset = 0
 
         style_content_feat = style_structure_features[-self.upblock_index-2]
+        # --- CALLI-RAG BEGIN: add retrieval-conditioned residual before offset loop ---
+        if retrieval_inputs is not None and self.retrieval_adapter is not None:
+            delta_h = self.retrieval_adapter(
+                h_q=style_content_feat,
+                refs=retrieval_inputs["refs"],
+                slot_ids=retrieval_inputs["slot_ids"],
+                role_ids=retrieval_inputs["role_ids"],
+                target_struct=retrieval_inputs["target_struct"],
+                mask=retrieval_inputs["mask"],
+            )
+            style_content_feat = style_content_feat + delta_h
+        # --- CALLI-RAG END ---
 
         for i, (sc_inter_offset, dcn_deform, resnet, attn) in \
             enumerate(zip(self.sc_interpreter_offsets, self.dcn_deforms, self.resnets, self.attentions)):

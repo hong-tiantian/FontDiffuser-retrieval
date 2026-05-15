@@ -200,6 +200,9 @@ class UNet(ModelMixin, ConfigMixin):
         encoder_hidden_states: torch.Tensor,
         content_encoder_downsample_size: int = 4,
         return_dict: bool = False,
+        # --- CALLI-RAG BEGIN: optional retrieval adapter inputs ---
+        retrieval_inputs: Optional[dict] = None,
+        # --- CALLI-RAG END ---
     ) -> Union[UNetOutput, Tuple]:
         # By default samples have to be AT least a multiple of the overall upsampling factor.
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layears).
@@ -275,12 +278,24 @@ class UNet(ModelMixin, ConfigMixin):
                 upsample_size = down_block_res_samples[-1].shape[2:]
 
             if (hasattr(upsample_block, "attentions") and upsample_block.attentions is not None) or hasattr(upsample_block, "content_attentions"):
+                # --- CALLI-RAG BEGIN: route retrieval inputs only to high-res offset block ---
+                retrieval_kwargs = {}
+                if (
+                    i == 2
+                    and hasattr(upsample_block, "retrieval_adapter")
+                    and upsample_block.retrieval_adapter is not None
+                ):
+                    retrieval_kwargs["retrieval_inputs"] = retrieval_inputs
+                # --- CALLI-RAG END ---
                 sample, offset_out = upsample_block(
                     hidden_states=sample,
                     temb=emb,
                     res_hidden_states_tuple=res_samples,
                     style_structure_features=encoder_hidden_states[3],
                     encoder_hidden_states=encoder_hidden_states[2],
+                    # --- CALLI-RAG BEGIN: pass retrieval kwargs ---
+                    **retrieval_kwargs,
+                    # --- CALLI-RAG END ---
                 )
                 offset_out_sum += offset_out
             else:
