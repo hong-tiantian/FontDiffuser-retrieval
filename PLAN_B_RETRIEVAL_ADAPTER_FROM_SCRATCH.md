@@ -52,7 +52,7 @@ Initial scope:
 
 - single character generation
 - Wang Xizhi only
-- 8 Plan A cases: `璨`, `霆`, `鳞`, `彎`, `瘻`, `秦`, `赢`, `諢`
+- 15 Plan A cases from `case_manifest.csv`
 - traditional/simplified status follows existing Plan A metadata
 - FontDiffuser backbone frozen
 - only retrieval adapter parameters trainable
@@ -461,7 +461,7 @@ scripts/inspect_retrieval_pack.py
 Responsibilities:
 
 - read Plan A outputs from `D:/00_project/callirag/retrieval_data_prepare`
-- build 5-slot packs for the 8 target cases
+- build 5-slot packs for every target case in `case_manifest.csv`
 - load and normalize ref images the same way FontDiffuser loads style/content
   images
 - enforce self-GT exclusion
@@ -518,13 +518,13 @@ or loss flow first.
 Add:
 
 ```text
-scripts/train_adapter_8case.py
-scripts/run_adapter_8case_inference.py
+scripts/train_adapter_manifest_cases.py
+scripts/run_adapter_manifest_cases_inference.py
 ```
 
 Training:
 
-- 8 Plan A cases
+- all Plan A cases in `case_manifest.csv` unless `--targets` selects a subset
 - frozen backbone
 - adapter-only checkpoint
 - no aux loss in V1
@@ -559,7 +559,7 @@ Minimum metrics:
 
 - output pixel difference against `alpha_zero`
 - OCR top-1 / confidence if available
-- manual pairwise review on 8 cases
+- manual pairwise review on the manifest case set
 - compare correct refs vs shuffled/random refs
 - compare all-anchor vs coverage-only
 
@@ -595,8 +595,8 @@ tests/test_adapter_integration.py
 dataset/retrieval_ref_pack.py
 scripts/inspect_retrieval_pack.py
 scripts/train_adapter_tiny_overfit.py
-scripts/train_adapter_8case.py
-scripts/run_adapter_8case_inference.py
+scripts/train_adapter_manifest_cases.py
+scripts/run_adapter_manifest_cases_inference.py
 CALLIRAG_CHANGELOG.md
 ```
 

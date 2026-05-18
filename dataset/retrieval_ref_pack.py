@@ -31,9 +31,6 @@ ROLE_TO_ID = {
     "empty": 2,
 }
 
-PLAN_B_TARGET_CHARS = ["璨", "霆", "鳞", "彎", "瘻", "秦", "赢", "諢"]
-
-
 @dataclass
 class RetrievalSlot:
     slot_id: int

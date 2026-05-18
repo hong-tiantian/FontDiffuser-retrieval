@@ -10,7 +10,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from dataset.retrieval_ref_pack import (
     DEFAULT_PLAN_A_ROOT,
-    PLAN_B_TARGET_CHARS,
     load_retrieval_packs,
     parse_path_maps,
     resolve_ref_path,
@@ -21,15 +20,10 @@ def main():
     parser = argparse.ArgumentParser(description="Inspect Plan A 5-slot retrieval packs.")
     parser.add_argument("--plan-a-root", type=Path, default=DEFAULT_PLAN_A_ROOT)
     parser.add_argument(
-        "--all-cases",
-        action="store_true",
-        help="Inspect every case in case_manifest.csv instead of the Plan B 8-case subset.",
-    )
-    parser.add_argument(
         "--targets",
         type=str,
         default=None,
-        help="Comma-separated target chars. Overrides the default Plan B 8-case subset.",
+        help="Optional comma-separated target chars. Defaults to every case in case_manifest.csv.",
     )
     parser.add_argument(
         "--path-map",
@@ -42,10 +36,8 @@ def main():
     path_maps = parse_path_maps(args.path_map)
     if args.targets:
         target_chars = [item.strip() for item in args.targets.split(",") if item.strip()]
-    elif args.all_cases:
-        target_chars = None
     else:
-        target_chars = PLAN_B_TARGET_CHARS
+        target_chars = None
     packs = load_retrieval_packs(args.plan_a_root, target_chars=target_chars)
     missing = 0
     leakage = 0
