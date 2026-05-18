@@ -24,6 +24,16 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         self.content_encoder = content_encoder
 
     # --- CALLI-RAG BEGIN: convert 5-slot retrieval images into content-encoder features ---
+    @staticmethod
+    def _select_ref_residual_feature(residual_features, ref_channels: int = 64):
+        for feature in residual_features:
+            if feature.shape[1] == ref_channels:
+                return feature
+        shapes = [tuple(feature.shape) for feature in residual_features]
+        raise ValueError(
+            f"content_encoder did not return a {ref_channels}-channel residual map; got {shapes}."
+        )
+
     def _build_retrieval_unet_inputs(self, retrieval_inputs, content_images):
         if retrieval_inputs is None:
             return None
@@ -56,9 +66,7 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         ref_images_flat = ref_images.reshape(batch_size * n_slots, channels, height, width)
         with torch.no_grad():
             _, ref_residual_features = self.content_encoder(ref_images_flat)
-        if len(ref_residual_features) < 4:
-            raise ValueError("content_encoder did not return enough residual feature levels.")
-        ref_feature = ref_residual_features[-4]
+        ref_feature = self._select_ref_residual_feature(ref_residual_features)
         unet_inputs["refs"] = ref_feature.reshape(
             batch_size,
             n_slots,

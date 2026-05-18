@@ -1,0 +1,3 @@
+target_char,content_image_path,style_image_path,target_image_path
+騫,D:/htt/callirag/cases/content/0020.jpg,D:/htt/data/image/train/wxz/2995.jpg,D:/htt/callirag/cases/gt/0020.jpg
+癱,D:/htt/callirag/cases/content/0021.jpg,D:/htt/data/image/train/wxz/3626.jpg,D:/htt/callirag/cases/gt/0021.jpg
