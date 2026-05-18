@@ -1,0 +1,2 @@
+target_char,content_image_path,style_image_path,target_image_path
+璨,D:/path/to/content/璨.jpg,D:/path/to/style/ref.jpg,D:/path/to/target/璨_gt.jpg

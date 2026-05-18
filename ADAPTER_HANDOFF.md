@@ -71,3 +71,36 @@ DPM sampling has not been wired for retrieval yet. Do training/tiny-overfit
 checks through `FontDiffuserModel.forward` first. DPM classifier-free retrieval
 conditioning needs a separate design decision for uncond vs cond retrieval
 inputs.
+
+## 5. Tiny Overfit
+
+Create a small CSV like:
+
+```text
+target_char,content_image_path,style_image_path,target_image_path
+璨,D:/.../content/璨.jpg,D:/.../style/ref.jpg,D:/.../gt/璨.jpg
+```
+
+Then run:
+
+```powershell
+python scripts/train_adapter_tiny_overfit.py `
+  --ckpt-dir D:/path/to/fontdiffuser_ckpt `
+  --tiny-manifest D:/path/to/tiny_overfit_manifest.csv `
+  --plan-a-root D:/htt/callirag `
+  --path-map /d/htt/data=D:/htt/data `
+  --steps 100 `
+  --device cuda:0 `
+  --save-checkpoint
+```
+
+Watch:
+
+```text
+alpha
+loss
+ref_ablation_mean_abs_diff
+```
+
+For C0, the important signal is that `alpha` moves away from zero and changing
+refs produces a nonzero output difference after training.

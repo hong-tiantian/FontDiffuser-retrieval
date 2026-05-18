@@ -11,3 +11,5 @@
 - `dataset/retrieval_ref_pack.py` - new file - P4 - reads Plan A `case_manifest.csv` and `sim_layer.json`, builds 5-slot retrieval packs, checks target leakage, resolves `/d/...` paths on Windows, and can load normalized ref image tensors.
 - `scripts/inspect_retrieval_pack.py` - new file - P4 - command-line inspection utility for Plan A retrieval packs, including slot ids, role ids, masks, missing image paths, and leakage checks.
 - `scripts/inspect_retrieval_pack.py` - approx loader defaults - P4 hygiene - keeps inspection default aligned with every case in `case_manifest.csv`; `--targets` can be used for manual subset checks.
+- `scripts/train_adapter_tiny_overfit.py` - new file - P5 - trains only the retrieval adapter on a tiny CSV manifest using frozen FontDiffuser checkpoints, logs loss/alpha/gradient norm, and reports a shuffled-ref ablation difference.
+- `examples/tiny_overfit_manifest.example.csv` - new file - P5 - documents the minimal CSV schema required by the tiny overfit script.
