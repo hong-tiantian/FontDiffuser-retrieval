@@ -136,6 +136,19 @@ def clone_retrieval_inputs(retrieval_inputs):
     return {key: value.clone() for key, value in retrieval_inputs.items()}
 
 
+def sample_noise_and_timesteps(target_images, noise_scheduler, fixed_noise, fixed_timesteps):
+    if fixed_noise is not None and fixed_timesteps is not None:
+        return fixed_noise, fixed_timesteps
+    noise = torch.randn_like(target_images)
+    timesteps = torch.randint(
+        0,
+        noise_scheduler.config.num_train_timesteps,
+        (target_images.shape[0],),
+        device=target_images.device,
+    ).long()
+    return noise, timesteps
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tiny overfit sanity check for retrieval adapter.")
     parser.add_argument("--ckpt-dir", type=str, required=True)
@@ -149,6 +162,11 @@ def main():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-checkpoint", action="store_true")
+    parser.add_argument(
+        "--resample-noise",
+        action="store_true",
+        help="Resample diffusion noise/timestep every step. Default keeps them fixed for true tiny-overfit diagnostics.",
+    )
     cli_args = parser.parse_args()
 
     random.seed(cli_args.seed)
@@ -184,17 +202,28 @@ def main():
     print(f"device: {device}")
     print(f"num_samples: {len(rows)}")
     print(f"trainable_params: {trainable_params}")
+    print(f"resample_noise: {cli_args.resample_noise}")
+
+    fixed_noise = None
+    fixed_timesteps = None
+    if not cli_args.resample_noise:
+        fixed_noise = torch.randn_like(batch["target_images"])
+        fixed_timesteps = torch.randint(
+            0,
+            noise_scheduler.config.num_train_timesteps,
+            (batch["target_images"].shape[0],),
+            device=batch["target_images"].device,
+        ).long()
 
     last_loss = None
     for step in range(1, cli_args.steps + 1):
         target_images = batch["target_images"]
-        noise = torch.randn_like(target_images)
-        timesteps = torch.randint(
-            0,
-            noise_scheduler.num_train_timesteps,
-            (target_images.shape[0],),
-            device=target_images.device,
-        ).long()
+        noise, timesteps = sample_noise_and_timesteps(
+            target_images,
+            noise_scheduler,
+            fixed_noise=fixed_noise,
+            fixed_timesteps=fixed_timesteps,
+        )
         noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
 
         noise_pred, offset_out_sum = model(
@@ -210,6 +239,7 @@ def main():
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        alpha_grad = None if adapter.alpha.grad is None else adapter.alpha.grad.detach().item()
         grad_norm = torch.nn.utils.clip_grad_norm_(adapter.parameters(), max_norm=1.0)
         optimizer.step()
         last_loss = loss.item()
@@ -218,19 +248,19 @@ def main():
             print(
                 f"step={step} loss={loss.item():.6f} diff={diff_loss.item():.6f} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
-                f"alpha={adapter.alpha.item():.8f} grad_norm={float(grad_norm):.6f}"
+                f"alpha={adapter.alpha.item():.8f} "
+                f"alpha_grad={alpha_grad:.6e} grad_norm={float(grad_norm):.6e}"
             )
 
     model.eval()
     with torch.no_grad():
         target_images = batch["target_images"]
-        noise = torch.randn_like(target_images)
-        timesteps = torch.randint(
-            0,
-            noise_scheduler.num_train_timesteps,
-            (target_images.shape[0],),
-            device=target_images.device,
-        ).long()
+        noise, timesteps = sample_noise_and_timesteps(
+            target_images,
+            noise_scheduler,
+            fixed_noise=fixed_noise,
+            fixed_timesteps=fixed_timesteps,
+        )
         noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
         out_correct = model(
             x_t=noisy_target_images,
@@ -258,6 +288,7 @@ def main():
 
     metrics = {
         "steps": cli_args.steps,
+        "resample_noise": cli_args.resample_noise,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),
         "ref_ablation_mean_abs_diff": ref_ablation_diff,

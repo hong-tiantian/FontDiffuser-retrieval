@@ -94,6 +94,10 @@ python scripts/train_adapter_tiny_overfit.py `
   --save-checkpoint
 ```
 
+By default the tiny-overfit script fixes the diffusion noise and timestep so the
+loss curve is interpretable. Add `--resample-noise` only when you want a noisier
+training-liveness check.
+
 Watch:
 
 ```text
