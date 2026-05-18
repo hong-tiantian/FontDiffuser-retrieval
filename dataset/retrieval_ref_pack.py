@@ -31,6 +31,8 @@ ROLE_TO_ID = {
     "empty": 2,
 }
 
+PLAN_B_TARGET_CHARS = ["璨", "霆", "鳞", "彎", "瘻", "秦", "赢", "諢"]
+
 
 @dataclass
 class RetrievalSlot:
@@ -162,10 +164,14 @@ def build_pack_for_target(
 def load_retrieval_packs(
     plan_a_root: Path = DEFAULT_PLAN_A_ROOT,
     n_slots: int = 5,
+    target_chars: Optional[Iterable[str]] = None,
 ) -> Dict[str, RetrievalPack]:
     plan_a_root = Path(plan_a_root)
     cases = load_case_manifest(plan_a_root / "outputs" / "case_manifest.csv")
     sim_layer = load_sim_layer(plan_a_root / "outputs" / "sim_layer.json")
+    if target_chars is not None:
+        target_set = set(target_chars)
+        cases = {target_char: row for target_char, row in cases.items() if target_char in target_set}
     return {
         target_char: build_pack_for_target(target_char, row, sim_layer, n_slots=n_slots)
         for target_char, row in cases.items()

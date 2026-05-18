@@ -22,6 +22,13 @@ python scripts/inspect_retrieval_pack.py --path-map /d/htt/data=D:/htt/data
 If the Wang Xizhi image root is different, change the right side of
 `--path-map`.
 
+By default, `inspect_retrieval_pack.py` checks the Plan B 8-case subset. To
+inspect every case in `case_manifest.csv`, add:
+
+```powershell
+python scripts/inspect_retrieval_pack.py --all-cases --path-map /d/htt/data=D:/htt/data
+```
+
 Expected:
 
 - `test_retrieval_adapter: OK`

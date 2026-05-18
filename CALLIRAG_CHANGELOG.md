@@ -10,3 +10,4 @@
 - `tests/test_adapter_integration.py` - new file - P2 - standalone CPU integration test for UNet bit-exact invariance, adapter gradient liveness, and adapter-only trainable parameter counting.
 - `dataset/retrieval_ref_pack.py` - new file - P4 - reads Plan A `case_manifest.csv` and `sim_layer.json`, builds 5-slot retrieval packs, checks target leakage, resolves `/d/...` paths on Windows, and can load normalized ref image tensors.
 - `scripts/inspect_retrieval_pack.py` - new file - P4 - command-line inspection utility for Plan A retrieval packs, including slot ids, role ids, masks, missing image paths, and leakage checks.
+- `dataset/retrieval_ref_pack.py` / `scripts/inspect_retrieval_pack.py` - approx loader defaults - P4 hygiene - adds the Plan B 8-case target list and makes inspection default to those 8 cases, with `--all-cases` for full manifest inspection.
