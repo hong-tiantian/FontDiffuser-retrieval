@@ -82,7 +82,15 @@ def load_model(args, device, adapter_scale, offset_scale, direct_scale):
     if args.phase_1_ckpt_dir is None:
         raise ValueError("--ckpt-dir is required.")
     ckpt_dir = Path(args.phase_1_ckpt_dir)
-    unet.load_state_dict(torch.load(ckpt_dir / "unet.pth", map_location="cpu"))
+    unet_state = torch.load(ckpt_dir / "unet.pth", map_location="cpu")
+    missing, unexpected = unet.load_state_dict(unet_state, strict=False)
+    if missing:
+        print(
+            f"[load] unet.pth: {len(missing)} missing key(s) use random init "
+            f"(e.g. retrieval_res_projs for direct-scale). First: {missing[0]}"
+        )
+    if unexpected:
+        print(f"[load] unet.pth: {len(unexpected)} unexpected key(s) ignored.")
     style_encoder.load_state_dict(torch.load(ckpt_dir / "style_encoder.pth", map_location="cpu"))
     content_encoder.load_state_dict(torch.load(ckpt_dir / "content_encoder.pth", map_location="cpu"))
 
