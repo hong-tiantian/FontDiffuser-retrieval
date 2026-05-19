@@ -148,3 +148,33 @@ retrieval_bundle.pth   # adapter + direct 1x1 projections + scale settings
 ```
 
 Use `retrieval_bundle.pth` for direct-skip runs.
+
+## 6. Manifest Inference
+
+After a manifest-case training run, generate comparison images with:
+
+```powershell
+python scripts/run_adapter_manifest_inference.py `
+  --ckpt-dir D:/htt/baseline_clean/FontDiffuser/ckpt `
+  --retrieval-bundle outputs/adapter_manifest_direct_s10/retrieval_bundle.pth `
+  --manifest D:/htt/FontDiffuser-retrieval/examples/tiny_overfit_manifest.csv `
+  --plan-a-root D:/htt/callirag `
+  --num-steps 20 `
+  --guidance-scale 7.5 `
+  --adapter-scale 10 `
+  --offset-scale 0 `
+  --direct-scale 1 `
+  --device cuda:0 `
+  --output-dir outputs/adapter_manifest_inference_direct_s10
+```
+
+Output groups:
+
+```text
+baseline_no_adapter
+adapter_correct_refs
+adapter_alpha_zero
+adapter_shuffled_refs
+adapter_zero_refs
+adapter_random_refs
+```
