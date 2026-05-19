@@ -17,6 +17,7 @@ class RetrievalAdapter(nn.Module):
         embed_dim: int = 64,
         n_heads: int = 4,
         ref_token_size: int = 12,
+        residual_scale: float = 1.0,
     ):
         super().__init__()
         if feat_channels % n_heads != 0:
@@ -31,6 +32,7 @@ class RetrievalAdapter(nn.Module):
         self.head_dim = feat_channels // n_heads
         self.scale = self.head_dim ** -0.5
         self.ref_token_size = ref_token_size
+        self.residual_scale = residual_scale
 
         self.q_norm = nn.LayerNorm(feat_channels)
         self.kv_norm = nn.LayerNorm(feat_channels)
@@ -159,7 +161,7 @@ class RetrievalAdapter(nn.Module):
         )
 
         pregate = self.out_proj(attn_out)
-        delta_tokens = self.alpha * pregate
+        delta_tokens = self.residual_scale * self.alpha * pregate
         delta_h = delta_tokens.transpose(1, 2).reshape(
             batch_size, self.feat_channels, height, width
         )
@@ -179,12 +181,14 @@ def attach_retrieval_adapter(
     ref_channels: int = 64,
     n_slots: int = 5,
     ref_token_size: int = 12,
+    residual_scale: float = 1.0,
 ):
     adapter = RetrievalAdapter(
         feat_channels=feat_channels,
         ref_channels=ref_channels,
         n_slots=n_slots,
         ref_token_size=ref_token_size,
+        residual_scale=residual_scale,
     )
     unet.up_blocks[up_block_index].retrieval_adapter = adapter
     return adapter

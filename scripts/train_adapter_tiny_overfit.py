@@ -74,7 +74,7 @@ def load_tiny_manifest(path):
     return rows
 
 
-def load_model(args, device):
+def load_model(args, device, adapter_scale):
     unet = build_unet(args=args)
     style_encoder = build_style_encoder(args=args)
     content_encoder = build_content_encoder(args=args)
@@ -91,7 +91,7 @@ def load_model(args, device):
         style_encoder=style_encoder,
         content_encoder=content_encoder,
     )
-    attach_retrieval_adapter(model.unet, up_block_index=2)
+    attach_retrieval_adapter(model.unet, up_block_index=2, residual_scale=adapter_scale)
     freeze_backbone_train_adapter(model, up_block_index=2)
     model.to(device)
     return model
@@ -160,6 +160,12 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument(
+        "--adapter-scale",
+        type=float,
+        default=1.0,
+        help="Temporary residual multiplier for C0 diagnostics. Default preserves normal adapter behavior.",
+    )
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-checkpoint", action="store_true")
     parser.add_argument(
@@ -175,7 +181,7 @@ def main():
     cli_args.output_dir.mkdir(parents=True, exist_ok=True)
 
     args = build_args(cli_args)
-    model = load_model(args, device=device)
+    model = load_model(args, device=device, adapter_scale=cli_args.adapter_scale)
     model.train()
     noise_scheduler = build_ddpm_scheduler(args)
     optimizer = torch.optim.AdamW(
@@ -203,6 +209,7 @@ def main():
     print(f"num_samples: {len(rows)}")
     print(f"trainable_params: {trainable_params}")
     print(f"resample_noise: {cli_args.resample_noise}")
+    print(f"adapter_scale: {cli_args.adapter_scale}")
 
     fixed_noise = None
     fixed_timesteps = None
@@ -289,6 +296,7 @@ def main():
     metrics = {
         "steps": cli_args.steps,
         "resample_noise": cli_args.resample_noise,
+        "adapter_scale": cli_args.adapter_scale,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),
         "ref_ablation_mean_abs_diff": ref_ablation_diff,

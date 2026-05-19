@@ -90,6 +90,7 @@ python scripts/train_adapter_tiny_overfit.py `
   --plan-a-root D:/htt/callirag `
   --path-map /d/htt/data=D:/htt/data `
   --steps 100 `
+  --adapter-scale 50 `
   --device cuda:0 `
   --save-checkpoint
 ```
@@ -108,3 +109,7 @@ ref_ablation_mean_abs_diff
 
 For C0, the important signal is that `alpha` moves away from zero and changing
 refs produces a nonzero output difference after training.
+
+Use `--adapter-scale` only as a diagnostic. If `--adapter-scale 50` makes loss
+move and ref ablation grow, the adapter path is valid but too weak at normal
+scale.
