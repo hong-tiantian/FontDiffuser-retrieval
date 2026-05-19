@@ -104,7 +104,11 @@ Watch:
 ```text
 alpha
 loss
-ref_ablation_mean_abs_diff
+final_delta_abs_mean
+alpha_zero_mean_abs_diff
+shuffle_refs_mean_abs_diff
+zero_refs_mean_abs_diff
+random_refs_mean_abs_diff
 ```
 
 For C0, the important signal is that `alpha` moves away from zero and changing

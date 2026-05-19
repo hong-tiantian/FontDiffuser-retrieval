@@ -165,11 +165,24 @@ class RetrievalAdapter(nn.Module):
         delta_h = delta_tokens.transpose(1, 2).reshape(
             batch_size, self.feat_channels, height, width
         )
+        self.last_stats = {
+            "alpha": self.alpha.detach(),
+            "pregate_norm": pregate.detach().norm(dim=-1).mean(),
+            "delta_norm": delta_h.detach().norm(dim=1).mean(),
+            "delta_abs_mean": delta_h.detach().abs().mean(),
+            "residual_scale": torch.tensor(
+                self.residual_scale,
+                device=delta_h.device,
+                dtype=delta_h.dtype,
+            ),
+        }
 
         if return_gate:
             return delta_h, {
                 "alpha": self.alpha,
                 "pregate_norm": pregate.norm(dim=-1).mean(),
+                "delta_norm": delta_h.norm(dim=1).mean(),
+                "delta_abs_mean": delta_h.abs().mean(),
             }
         return delta_h
 

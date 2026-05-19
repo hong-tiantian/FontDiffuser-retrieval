@@ -15,3 +15,4 @@
 - `examples/tiny_overfit_manifest.example.csv` - new file - P5 - documents the minimal CSV schema required by the tiny overfit script.
 - `scripts/train_adapter_tiny_overfit.py` - approx training loop - P5 hygiene - fixes diffusion noise/timestep by default for interpretable tiny-overfit loss, adds `--resample-noise`, and prints `alpha_grad`/`grad_norm` in scientific notation.
 - `src/modules/retrieval_adapter.py` / `scripts/train_adapter_tiny_overfit.py` - approx adapter init/training args - P5 diagnostic - adds `residual_scale` with default `1.0` and exposes `--adapter-scale` for temporary tiny-overfit signal amplification.
+- `src/modules/retrieval_adapter.py` / `scripts/train_adapter_tiny_overfit.py` - approx adapter forward/final diagnostics - P5 diagnostic - records adapter pregate/delta norms and reports stronger ablations against alpha-zero, shuffled refs, zero refs, and random refs.

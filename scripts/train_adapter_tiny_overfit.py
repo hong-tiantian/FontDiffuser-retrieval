@@ -136,6 +136,21 @@ def clone_retrieval_inputs(retrieval_inputs):
     return {key: value.clone() for key, value in retrieval_inputs.items()}
 
 
+def tensor_mean_abs_diff(a, b):
+    return (a - b).abs().mean().item()
+
+
+def model_noise_pred(model, batch, noisy_target_images, timesteps, args, retrieval_inputs):
+    return model(
+        x_t=noisy_target_images,
+        timesteps=timesteps,
+        style_images=batch["style_images"],
+        content_images=batch["content_images"],
+        content_encoder_downsample_size=args.content_encoder_downsample_size,
+        retrieval_inputs=retrieval_inputs,
+    )[0]
+
+
 def sample_noise_and_timesteps(target_images, noise_scheduler, fixed_noise, fixed_timesteps):
     if fixed_noise is not None and fixed_timesteps is not None:
         return fixed_noise, fixed_timesteps
@@ -252,11 +267,15 @@ def main():
         last_loss = loss.item()
 
         if step == 1 or step % cli_args.log_every == 0 or step == cli_args.steps:
+            stats = getattr(adapter, "last_stats", {})
+            pregate_norm = float(stats.get("pregate_norm", torch.tensor(0.0)).detach().cpu())
+            delta_abs_mean = float(stats.get("delta_abs_mean", torch.tensor(0.0)).detach().cpu())
             print(
                 f"step={step} loss={loss.item():.6f} diff={diff_loss.item():.6f} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
                 f"alpha={adapter.alpha.item():.8f} "
-                f"alpha_grad={alpha_grad:.6e} grad_norm={float(grad_norm):.6e}"
+                f"alpha_grad={alpha_grad:.6e} grad_norm={float(grad_norm):.6e} "
+                f"pregate_norm={pregate_norm:.6e} delta_abs_mean={delta_abs_mean:.6e}"
             )
 
     model.eval()
@@ -269,29 +288,51 @@ def main():
             fixed_timesteps=fixed_timesteps,
         )
         noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
-        out_correct = model(
-            x_t=noisy_target_images,
-            timesteps=timesteps,
-            style_images=batch["style_images"],
-            content_images=batch["content_images"],
-            content_encoder_downsample_size=args.content_encoder_downsample_size,
-            retrieval_inputs=batch["retrieval_inputs"],
-        )[0]
+        out_correct = model_noise_pred(
+            model, batch, noisy_target_images, timesteps, args, batch["retrieval_inputs"]
+        )
+
+        old_alpha = adapter.alpha.detach().clone()
+        adapter.alpha.zero_()
+        out_alpha_zero = model_noise_pred(
+            model, batch, noisy_target_images, timesteps, args, batch["retrieval_inputs"]
+        )
+        adapter.alpha.copy_(old_alpha)
+
         shuffled_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
         shuffled_inputs["ref_images"] = torch.roll(shuffled_inputs["ref_images"], shifts=1, dims=1)
-        out_shuffled = model(
-            x_t=noisy_target_images,
-            timesteps=timesteps,
-            style_images=batch["style_images"],
-            content_images=batch["content_images"],
-            content_encoder_downsample_size=args.content_encoder_downsample_size,
-            retrieval_inputs=shuffled_inputs,
-        )[0]
-        ref_ablation_diff = (out_correct - out_shuffled).abs().mean().item()
+        out_shuffled = model_noise_pred(
+            model, batch, noisy_target_images, timesteps, args, shuffled_inputs
+        )
+
+        zero_ref_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
+        zero_ref_inputs["ref_images"] = torch.zeros_like(zero_ref_inputs["ref_images"])
+        out_zero_refs = model_noise_pred(
+            model, batch, noisy_target_images, timesteps, args, zero_ref_inputs
+        )
+
+        random_ref_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
+        random_ref_inputs["ref_images"] = torch.randn_like(random_ref_inputs["ref_images"])
+        out_random_refs = model_noise_pred(
+            model, batch, noisy_target_images, timesteps, args, random_ref_inputs
+        )
+
+        ref_ablation_diff = tensor_mean_abs_diff(out_correct, out_shuffled)
+        alpha_zero_diff = tensor_mean_abs_diff(out_correct, out_alpha_zero)
+        zero_refs_diff = tensor_mean_abs_diff(out_correct, out_zero_refs)
+        random_refs_diff = tensor_mean_abs_diff(out_correct, out_random_refs)
+        final_stats = getattr(adapter, "last_stats", {})
+        final_pregate_norm = float(final_stats.get("pregate_norm", torch.tensor(0.0)).detach().cpu())
+        final_delta_abs_mean = float(final_stats.get("delta_abs_mean", torch.tensor(0.0)).detach().cpu())
 
     print(f"final_loss: {last_loss:.6f}")
     print(f"final_alpha: {adapter.alpha.item():.8f}")
-    print(f"ref_ablation_mean_abs_diff: {ref_ablation_diff:.8f}")
+    print(f"final_pregate_norm: {final_pregate_norm:.8e}")
+    print(f"final_delta_abs_mean: {final_delta_abs_mean:.8e}")
+    print(f"shuffle_refs_mean_abs_diff: {ref_ablation_diff:.8f}")
+    print(f"alpha_zero_mean_abs_diff: {alpha_zero_diff:.8f}")
+    print(f"zero_refs_mean_abs_diff: {zero_refs_diff:.8f}")
+    print(f"random_refs_mean_abs_diff: {random_refs_diff:.8f}")
 
     metrics = {
         "steps": cli_args.steps,
@@ -299,7 +340,12 @@ def main():
         "adapter_scale": cli_args.adapter_scale,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),
-        "ref_ablation_mean_abs_diff": ref_ablation_diff,
+        "final_pregate_norm": final_pregate_norm,
+        "final_delta_abs_mean": final_delta_abs_mean,
+        "shuffle_refs_mean_abs_diff": ref_ablation_diff,
+        "alpha_zero_mean_abs_diff": alpha_zero_diff,
+        "zero_refs_mean_abs_diff": zero_refs_diff,
+        "random_refs_mean_abs_diff": random_refs_diff,
         "trainable_params": trainable_params,
         "adapter_params": adapter_params,
         "num_samples": len(rows),
