@@ -91,6 +91,7 @@ python scripts/train_adapter_tiny_overfit.py `
   --path-map /d/htt/data=D:/htt/data `
   --steps 100 `
   --adapter-scale 50 `
+  --direct-scale 1 `
   --device cuda:0 `
   --save-checkpoint
 ```
@@ -117,3 +118,8 @@ refs produces a nonzero output difference after training.
 Use `--adapter-scale` only as a diagnostic. If `--adapter-scale 50` makes loss
 move and ref ablation grow, the adapter path is valid but too weak at normal
 scale.
+
+Use `--direct-scale` to test the second injection path. The default `0` keeps
+the original offset-path-only behavior. A useful diagnostic command is
+`--adapter-scale 50 --offset-scale 0 --direct-scale 1`, which isolates direct
+skip-feature injection.

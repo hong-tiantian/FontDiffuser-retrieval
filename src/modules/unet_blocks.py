@@ -451,6 +451,9 @@ class StyleRSIUpBlock2D(nn.Module):
         attentions = []
         sc_interpreter_offsets = []
         dcn_deforms = []
+        # --- CALLI-RAG BEGIN: direct retrieval residual projections ---
+        retrieval_res_projs = []
+        # --- CALLI-RAG END ---
 
         self.attention_type = attention_type
         self.attn_num_head_channels = attn_num_head_channels
@@ -459,15 +462,19 @@ class StyleRSIUpBlock2D(nn.Module):
         for i in range(num_layers):
             res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
             resnet_in_channels = prev_output_channel if i == 0 else out_channels
+            style_feat_channels = int(structure_feature_begin * 2 / upblock_index)
             
             sc_interpreter_offsets.append(
                 OffsetRefStrucInter(
                     res_in_channels=res_skip_channels,
-                    style_feat_in_channels=int(structure_feature_begin * 2 / upblock_index),
+                    style_feat_in_channels=style_feat_channels,
                     n_heads=attn_num_head_channels,
                     num_groups=resnet_groups,
                 )
             )
+            # --- CALLI-RAG BEGIN: project retrieval delta into each skip feature width ---
+            retrieval_res_projs.append(nn.Conv2d(style_feat_channels, res_skip_channels, kernel_size=1))
+            # --- CALLI-RAG END ---
             dcn_deforms.append(
                 DeformConv2d(
                     in_channels=res_skip_channels,
@@ -505,6 +512,11 @@ class StyleRSIUpBlock2D(nn.Module):
             )
         self.sc_interpreter_offsets = nn.ModuleList(sc_interpreter_offsets)
         self.dcn_deforms = nn.ModuleList(dcn_deforms)
+        # --- CALLI-RAG BEGIN: direct retrieval residual projections ---
+        self.retrieval_res_projs = nn.ModuleList(retrieval_res_projs)
+        self.retrieval_offset_scale = 1.0
+        self.retrieval_direct_scale = 0.0
+        # --- CALLI-RAG END ---
         self.attentions = nn.ModuleList(attentions)
         self.resnets = nn.ModuleList(resnets)
 
@@ -552,9 +564,12 @@ class StyleRSIUpBlock2D(nn.Module):
         total_offset = 0
 
         style_content_feat = style_structure_features[-self.upblock_index-2]
+        # --- CALLI-RAG BEGIN: cache retrieval delta for offset and direct feature injection ---
+        retrieval_delta_h = None
+        # --- CALLI-RAG END ---
         # --- CALLI-RAG BEGIN: add retrieval-conditioned residual before offset loop ---
         if retrieval_inputs is not None and self.retrieval_adapter is not None:
-            delta_h = self.retrieval_adapter(
+            retrieval_delta_h = self.retrieval_adapter(
                 h_q=style_content_feat,
                 refs=retrieval_inputs["refs"],
                 slot_ids=retrieval_inputs["slot_ids"],
@@ -562,11 +577,11 @@ class StyleRSIUpBlock2D(nn.Module):
                 target_struct=retrieval_inputs["target_struct"],
                 mask=retrieval_inputs["mask"],
             )
-            style_content_feat = style_content_feat + delta_h
+            style_content_feat = style_content_feat + self.retrieval_offset_scale * retrieval_delta_h
         # --- CALLI-RAG END ---
 
-        for i, (sc_inter_offset, dcn_deform, resnet, attn) in \
-            enumerate(zip(self.sc_interpreter_offsets, self.dcn_deforms, self.resnets, self.attentions)):
+        for i, (sc_inter_offset, dcn_deform, retrieval_res_proj, resnet, attn) in \
+            enumerate(zip(self.sc_interpreter_offsets, self.dcn_deforms, self.retrieval_res_projs, self.resnets, self.attentions)):
             # pop res hidden states 
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
@@ -580,6 +595,19 @@ class StyleRSIUpBlock2D(nn.Module):
 
             res_hidden_states = res_hidden_states.contiguous()
             res_hidden_states = dcn_deform(res_hidden_states, offset)
+            # --- CALLI-RAG BEGIN: optionally inject retrieval residual directly into skip feature ---
+            if retrieval_delta_h is not None and self.retrieval_direct_scale != 0:
+                direct_delta = retrieval_delta_h
+                if direct_delta.shape[-2:] != res_hidden_states.shape[-2:]:
+                    direct_delta = torch.nn.functional.interpolate(
+                        direct_delta,
+                        size=res_hidden_states.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                direct_delta = retrieval_res_proj(direct_delta)
+                res_hidden_states = res_hidden_states + self.retrieval_direct_scale * direct_delta
+            # --- CALLI-RAG END ---
             # concat as input
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 

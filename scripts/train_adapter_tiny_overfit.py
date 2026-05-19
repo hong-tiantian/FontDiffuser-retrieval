@@ -74,7 +74,7 @@ def load_tiny_manifest(path):
     return rows
 
 
-def load_model(args, device, adapter_scale):
+def load_model(args, device, adapter_scale, offset_scale, direct_scale):
     unet = build_unet(args=args)
     style_encoder = build_style_encoder(args=args)
     content_encoder = build_content_encoder(args=args)
@@ -91,7 +91,13 @@ def load_model(args, device, adapter_scale):
         style_encoder=style_encoder,
         content_encoder=content_encoder,
     )
-    attach_retrieval_adapter(model.unet, up_block_index=2, residual_scale=adapter_scale)
+    attach_retrieval_adapter(
+        model.unet,
+        up_block_index=2,
+        residual_scale=adapter_scale,
+        offset_scale=offset_scale,
+        direct_scale=direct_scale,
+    )
     freeze_backbone_train_adapter(model, up_block_index=2)
     model.to(device)
     return model
@@ -181,6 +187,18 @@ def main():
         default=1.0,
         help="Temporary residual multiplier for C0 diagnostics. Default preserves normal adapter behavior.",
     )
+    parser.add_argument(
+        "--offset-scale",
+        type=float,
+        default=1.0,
+        help="Scale for the original offset-path retrieval injection.",
+    )
+    parser.add_argument(
+        "--direct-scale",
+        type=float,
+        default=0.0,
+        help="Scale for direct retrieval residual injection into StyleRSI skip features.",
+    )
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-checkpoint", action="store_true")
     parser.add_argument(
@@ -196,7 +214,13 @@ def main():
     cli_args.output_dir.mkdir(parents=True, exist_ok=True)
 
     args = build_args(cli_args)
-    model = load_model(args, device=device, adapter_scale=cli_args.adapter_scale)
+    model = load_model(
+        args,
+        device=device,
+        adapter_scale=cli_args.adapter_scale,
+        offset_scale=cli_args.offset_scale,
+        direct_scale=cli_args.direct_scale,
+    )
     model.train()
     noise_scheduler = build_ddpm_scheduler(args)
     optimizer = torch.optim.AdamW(
@@ -216,15 +240,24 @@ def main():
     adapter = model.unet.up_blocks[2].retrieval_adapter
     trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
     adapter_params = sum(param.numel() for param in adapter.parameters())
-    if trainable_params != adapter_params:
+    direct_params = sum(
+        param.numel()
+        for param in model.unet.up_blocks[2].retrieval_res_projs.parameters()
+        if param.requires_grad
+    )
+    expected_trainable_params = adapter_params + direct_params
+    if trainable_params != expected_trainable_params:
         raise AssertionError(
-            f"freeze check failed: trainable={trainable_params}, adapter={adapter_params}"
+            "freeze check failed: "
+            f"trainable={trainable_params}, expected={expected_trainable_params}"
         )
     print(f"device: {device}")
     print(f"num_samples: {len(rows)}")
     print(f"trainable_params: {trainable_params}")
     print(f"resample_noise: {cli_args.resample_noise}")
     print(f"adapter_scale: {cli_args.adapter_scale}")
+    print(f"offset_scale: {cli_args.offset_scale}")
+    print(f"direct_scale: {cli_args.direct_scale}")
 
     fixed_noise = None
     fixed_timesteps = None
@@ -338,6 +371,8 @@ def main():
         "steps": cli_args.steps,
         "resample_noise": cli_args.resample_noise,
         "adapter_scale": cli_args.adapter_scale,
+        "offset_scale": cli_args.offset_scale,
+        "direct_scale": cli_args.direct_scale,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),
         "final_pregate_norm": final_pregate_norm,

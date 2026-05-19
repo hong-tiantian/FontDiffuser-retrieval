@@ -195,6 +195,8 @@ def attach_retrieval_adapter(
     n_slots: int = 5,
     ref_token_size: int = 12,
     residual_scale: float = 1.0,
+    offset_scale: float = 1.0,
+    direct_scale: float = 0.0,
 ):
     adapter = RetrievalAdapter(
         feat_channels=feat_channels,
@@ -203,16 +205,25 @@ def attach_retrieval_adapter(
         ref_token_size=ref_token_size,
         residual_scale=residual_scale,
     )
-    unet.up_blocks[up_block_index].retrieval_adapter = adapter
+    block = unet.up_blocks[up_block_index]
+    block.retrieval_adapter = adapter
+    if hasattr(block, "retrieval_offset_scale"):
+        block.retrieval_offset_scale = offset_scale
+    if hasattr(block, "retrieval_direct_scale"):
+        block.retrieval_direct_scale = direct_scale
     return adapter
 
 
 def freeze_backbone_train_adapter(model, up_block_index: int = 2):
     for param in model.parameters():
         param.requires_grad_(False)
-    adapter = model.unet.up_blocks[up_block_index].retrieval_adapter
+    block = model.unet.up_blocks[up_block_index]
+    adapter = block.retrieval_adapter
     if adapter is None:
         raise ValueError("No retrieval adapter attached to the requested up block.")
     for param in adapter.parameters():
         param.requires_grad_(True)
+    if getattr(block, "retrieval_direct_scale", 0.0) != 0 and hasattr(block, "retrieval_res_projs"):
+        for param in block.retrieval_res_projs.parameters():
+            param.requires_grad_(True)
     return adapter
