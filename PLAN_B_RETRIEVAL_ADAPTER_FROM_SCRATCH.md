@@ -513,7 +513,7 @@ Exit criteria:
 If P5 fails, do not add mid-block injection. Diagnose adapter, data contract,
 or loss flow first.
 
-### P6: 8-Case Adapter Training
+### P6: Manifest-Case Adapter Training
 
 Add:
 
@@ -528,6 +528,8 @@ Training:
 - frozen backbone
 - adapter-only checkpoint
 - no aux loss in V1
+- default diagnostic architecture: direct skip residual injection at `up_blocks[2]`
+- recommended starting config: `adapter_scale=10`, `offset_scale=0`, `direct_scale=1`
 
 Inference groups:
 
@@ -572,6 +574,16 @@ Interpretation:
 - coverage-only helps specific cases: coverage slots are meaningful
 
 ## 9. Mid-Block Injection Decision
+
+Current C0 result:
+
+```text
+offset-path-only injection is too weak.
+direct skip residual injection at up_blocks[2] can overfit and changes noise_pred.
+```
+
+Do not add mid-block injection yet. First train/evaluate the direct skip path on
+the manifest cases.
 
 Do not implement mid-block injection until P5 and P7 provide evidence.
 

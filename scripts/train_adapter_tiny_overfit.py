@@ -150,6 +150,20 @@ def clone_retrieval_inputs(retrieval_inputs):
     return {key: value.clone() for key, value in retrieval_inputs.items()}
 
 
+def trainable_retrieval_parameters(model):
+    return [param for param in model.parameters() if param.requires_grad]
+
+
+def retrieval_state_dict(model):
+    block = model.unet.up_blocks[2]
+    return {
+        "retrieval_adapter": block.retrieval_adapter.state_dict(),
+        "retrieval_res_projs": block.retrieval_res_projs.state_dict(),
+        "retrieval_offset_scale": block.retrieval_offset_scale,
+        "retrieval_direct_scale": block.retrieval_direct_scale,
+    }
+
+
 def tensor_mean_abs_diff(a, b):
     return (a - b).abs().mean().item()
 
@@ -181,7 +195,7 @@ def sample_noise_and_timesteps(target_images, noise_scheduler, fixed_noise, fixe
 def main():
     parser = argparse.ArgumentParser(description="Tiny overfit sanity check for retrieval adapter.")
     parser.add_argument("--ckpt-dir", type=str, required=True)
-    parser.add_argument("--tiny-manifest", type=str, required=True)
+    parser.add_argument("--tiny-manifest", "--manifest", dest="tiny_manifest", type=str, required=True)
     parser.add_argument("--plan-a-root", type=Path, default=DEFAULT_PLAN_A_ROOT)
     parser.add_argument("--path-map", action="append", default=[])
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/adapter_tiny_overfit"))
@@ -231,8 +245,9 @@ def main():
     )
     model.train()
     noise_scheduler = build_ddpm_scheduler(args)
+    trainable_parameters = trainable_retrieval_parameters(model)
     optimizer = torch.optim.AdamW(
-        [param for param in model.parameters() if param.requires_grad],
+        trainable_parameters,
         lr=cli_args.lr,
         weight_decay=0.0,
     )
@@ -303,7 +318,7 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         alpha_grad = None if adapter.alpha.grad is None else adapter.alpha.grad.detach().item()
-        grad_norm = torch.nn.utils.clip_grad_norm_(adapter.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=1.0)
         optimizer.step()
         last_loss = loss.item()
 
@@ -399,6 +414,7 @@ def main():
     )
     if cli_args.save_checkpoint:
         torch.save(adapter.state_dict(), cli_args.output_dir / "retrieval_adapter.pth")
+        torch.save(retrieval_state_dict(model), cli_args.output_dir / "retrieval_bundle.pth")
 
 
 if __name__ == "__main__":

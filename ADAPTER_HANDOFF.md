@@ -96,6 +96,22 @@ python scripts/train_adapter_tiny_overfit.py `
   --save-checkpoint
 ```
 
+For the 15-case manifest run, the equivalent entrypoint is:
+
+```powershell
+python scripts/train_adapter_manifest_cases.py `
+  --ckpt-dir D:/path/to/fontdiffuser_ckpt `
+  --manifest D:/htt/FontDiffuser-retrieval/examples/tiny_overfit_manifest.csv `
+  --plan-a-root D:/htt/callirag `
+  --steps 1000 `
+  --adapter-scale 10 `
+  --offset-scale 0 `
+  --direct-scale 1 `
+  --device cuda:0 `
+  --save-checkpoint `
+  --output-dir outputs/adapter_manifest_direct_s10
+```
+
 By default the tiny-overfit script fixes the diffusion noise and timestep so the
 loss curve is interpretable. Add `--resample-noise` only when you want a noisier
 training-liveness check.
@@ -123,3 +139,12 @@ Use `--direct-scale` to test the second injection path. The default `0` keeps
 the original offset-path-only behavior. A useful diagnostic command is
 `--adapter-scale 50 --offset-scale 0 --direct-scale 1`, which isolates direct
 skip-feature injection.
+
+When `--save-checkpoint` is used, two files are written:
+
+```text
+retrieval_adapter.pth  # adapter only, kept for debugging
+retrieval_bundle.pth   # adapter + direct 1x1 projections + scale settings
+```
+
+Use `retrieval_bundle.pth` for direct-skip runs.
