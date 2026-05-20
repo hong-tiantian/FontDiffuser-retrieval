@@ -197,6 +197,17 @@ def sample_retrieval_mode(args):
     return weights[-1][0]
 
 
+def parse_wrong_modes(modes_text):
+    valid_modes = {"shuffled", "zero", "random"}
+    modes = [mode.strip() for mode in modes_text.split(",") if mode.strip()]
+    if not modes:
+        raise ValueError("--paired-wrong-modes must include at least one mode.")
+    unknown_modes = [mode for mode in modes if mode not in valid_modes]
+    if unknown_modes:
+        raise ValueError(f"unknown paired wrong mode(s): {unknown_modes}")
+    return modes
+
+
 def trainable_retrieval_parameters(model):
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -325,6 +336,23 @@ def main():
             "back to the frozen baseline prediction."
         ),
     )
+    parser.add_argument(
+        "--paired-wrong-ref-loss",
+        action="store_true",
+        help="Every step trains correct refs on diffusion loss plus selected wrong refs toward alpha-zero baseline.",
+    )
+    parser.add_argument(
+        "--paired-wrong-modes",
+        type=str,
+        default="shuffled",
+        help="Comma-separated wrong modes for paired loss. Valid: shuffled,zero,random.",
+    )
+    parser.add_argument(
+        "--lambda-wrong-ref",
+        type=float,
+        default=1.0,
+        help="Weight for paired wrong-ref alpha-zero loss.",
+    )
     cli_args = parser.parse_args()
 
     random.seed(cli_args.seed)
@@ -387,6 +415,10 @@ def main():
     print(f"lambda_delta: {cli_args.lambda_delta}")
     print(f"lambda_alpha: {cli_args.lambda_alpha}")
     print(f"wrong_ref_target: {cli_args.wrong_ref_target}")
+    paired_wrong_modes = parse_wrong_modes(cli_args.paired_wrong_modes)
+    print(f"paired_wrong_ref_loss: {cli_args.paired_wrong_ref_loss}")
+    print(f"paired_wrong_modes: {','.join(paired_wrong_modes)}")
+    print(f"lambda_wrong_ref: {cli_args.lambda_wrong_ref}")
 
     fixed_noise = None
     fixed_timesteps = None
@@ -412,6 +444,10 @@ def main():
         }
         for mode in ("correct", "shuffled", "zero", "random")
     }
+    paired_wrong_totals = {
+        mode: {"count": 0, "objective": 0.0, "diff": 0.0}
+        for mode in paired_wrong_modes
+    }
     for step in range(1, cli_args.steps + 1):
         target_images = batch["target_images"]
         noise, timesteps = sample_noise_and_timesteps(
@@ -421,11 +457,14 @@ def main():
             fixed_timesteps=fixed_timesteps,
         )
         noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
-        retrieval_mode = (
-            sample_retrieval_mode(cli_args)
-            if cli_args.retrieval_mode_augmentation
-            else "correct"
-        )
+        if cli_args.paired_wrong_ref_loss:
+            retrieval_mode = "correct"
+        else:
+            retrieval_mode = (
+                sample_retrieval_mode(cli_args)
+                if cli_args.retrieval_mode_augmentation
+                else "correct"
+            )
         step_retrieval_inputs = make_retrieval_inputs_for_mode(
             batch["retrieval_inputs"],
             retrieval_mode,
@@ -468,9 +507,46 @@ def main():
             baseline_loss = objective_loss
         else:
             objective_loss = diff_loss
+        paired_wrong_loss = torch.zeros((), device=target_images.device, dtype=objective_loss.dtype)
+        paired_wrong_log = []
+        if cli_args.paired_wrong_ref_loss:
+            for wrong_mode in paired_wrong_modes:
+                wrong_inputs = make_retrieval_inputs_for_mode(
+                    batch["retrieval_inputs"],
+                    wrong_mode,
+                )
+                wrong_pred = model_noise_pred(
+                    model,
+                    batch,
+                    noisy_target_images,
+                    timesteps,
+                    args,
+                    wrong_inputs,
+                )
+                wrong_baseline_pred = model_noise_pred_alpha_zero(
+                    model,
+                    batch,
+                    noisy_target_images,
+                    timesteps,
+                    args,
+                    wrong_inputs,
+                )
+                wrong_objective = F.mse_loss(
+                    wrong_pred.float(),
+                    wrong_baseline_pred.float(),
+                    reduction="mean",
+                )
+                wrong_diff = F.mse_loss(wrong_pred.float(), noise.float(), reduction="mean")
+                paired_wrong_loss = paired_wrong_loss + wrong_objective
+                paired_wrong_totals[wrong_mode]["count"] += 1
+                paired_wrong_totals[wrong_mode]["objective"] += wrong_objective.item()
+                paired_wrong_totals[wrong_mode]["diff"] += wrong_diff.item()
+                paired_wrong_log.append(f"{wrong_mode}:{wrong_objective.item():.6f}")
+            paired_wrong_loss = paired_wrong_loss / len(paired_wrong_modes)
         alpha_reg = adapter.alpha.abs()
         loss = (
             objective_loss
+            + cli_args.lambda_wrong_ref * paired_wrong_loss
             + 0.5 * (offset_out_sum / 2)
             + cli_args.lambda_delta * delta_reg
             + cli_args.lambda_alpha * alpha_reg
@@ -497,6 +573,8 @@ def main():
                 f"step={step} mode={retrieval_mode} loss={loss.item():.6f} "
                 f"objective={objective_loss.item():.6f} diff={diff_loss.item():.6f} "
                 f"baseline={baseline_loss.item():.6f} "
+                f"paired_wrong={paired_wrong_loss.item():.6f} "
+                f"paired_modes={','.join(paired_wrong_log) if paired_wrong_log else 'none'} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
                 f"delta_reg={float(delta_reg.detach().cpu()):.6e} "
                 f"alpha_reg={float(alpha_reg.detach().cpu()):.6e} "
@@ -527,6 +605,21 @@ def main():
             "mean_baseline": totals["baseline"] / count,
             "mean_delta_reg": totals["delta"] / count,
             "mean_alpha_reg": totals["alpha"] / count,
+        }
+    paired_wrong_summary = {}
+    for mode, totals in paired_wrong_totals.items():
+        count = totals["count"]
+        if count == 0:
+            paired_wrong_summary[mode] = {
+                "count": 0,
+                "mean_objective": None,
+                "mean_diff": None,
+            }
+            continue
+        paired_wrong_summary[mode] = {
+            "count": count,
+            "mean_objective": totals["objective"] / count,
+            "mean_diff": totals["diff"] / count,
         }
 
     model.eval()
@@ -622,6 +715,15 @@ def main():
                 f"mean_delta_reg={summary['mean_delta_reg']:.6e} "
                 f"mean_alpha_reg={summary['mean_alpha_reg']:.6e}"
             )
+    for mode, summary in paired_wrong_summary.items():
+        if summary["count"] == 0:
+            print(f"paired_wrong_summary[{mode}]: count=0")
+        else:
+            print(
+                f"paired_wrong_summary[{mode}]: count={summary['count']} "
+                f"mean_objective={summary['mean_objective']:.6f} "
+                f"mean_diff={summary['mean_diff']:.6f}"
+            )
 
     metrics = {
         "steps": cli_args.steps,
@@ -639,7 +741,11 @@ def main():
         "lambda_delta": cli_args.lambda_delta,
         "lambda_alpha": cli_args.lambda_alpha,
         "wrong_ref_target": cli_args.wrong_ref_target,
+        "paired_wrong_ref_loss": cli_args.paired_wrong_ref_loss,
+        "paired_wrong_modes": paired_wrong_modes,
+        "lambda_wrong_ref": cli_args.lambda_wrong_ref,
         "mode_summary": mode_summary,
+        "paired_wrong_summary": paired_wrong_summary,
         "eval_mode_metrics": eval_mode_metrics,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),

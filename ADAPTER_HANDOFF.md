@@ -152,7 +152,8 @@ Use `retrieval_bundle.pth` for direct-skip runs.
 ### Retrieval Mode Augmentation
 
 `scripts/train_adapter_manifest_cases.py` now supports training-time retrieval
-mode augmentation. Enable it with:
+mode augmentation. The current preferred hard-negative diagnostic trains correct
+refs every step and adds a paired alpha-zero loss for shuffled refs:
 
 ```powershell
 python scripts/train_adapter_manifest_cases.py `
@@ -163,29 +164,25 @@ python scripts/train_adapter_manifest_cases.py `
   --adapter-scale 10 `
   --offset-scale 0 `
   --direct-scale 1 `
-  --retrieval-mode-augmentation `
-  --p-correct 0.70 `
-  --p-shuffled 0.10 `
-  --p-zero 0.10 `
-  --p-random 0.10 `
-  --wrong-ref-target alpha_zero `
+  --paired-wrong-ref-loss `
+  --paired-wrong-modes shuffled `
+  --lambda-wrong-ref 1 `
   --lambda-delta 0.001 `
   --lambda-alpha 0 `
   --device cuda:0 `
   --save-checkpoint `
-  --output-dir outputs/adapter_manifest_aug_reg_s10
+  --output-dir outputs/adapter_manifest_paired_shuf_s10
 ```
 
-The default behavior is unchanged unless `--retrieval-mode-augmentation` is
-passed. The script prints and writes `mode_summary` to `metrics.json`, including
-per-mode counts, mean loss, mean objective loss, mean diffusion loss, mean
-alpha-zero baseline loss, mean delta regularization, and mean alpha
-regularization. Use `--wrong-ref-target alpha_zero` for the diagnostic training
-that forces shuffled/zero/random refs back toward the frozen baseline instead
-of letting wrong refs optimize the same diffusion target. It also writes
-`eval_mode_metrics`, which compares final correct/shuffled/zero/random
-diffusion loss, mean absolute output difference against correct refs, and mean
-absolute output difference against alpha-zero baseline.
+The older sampled augmentation path remains available with
+`--retrieval-mode-augmentation` and `--wrong-ref-target alpha_zero`. The script
+prints and writes `mode_summary` to `metrics.json`, including per-mode counts,
+mean loss, mean objective loss, mean diffusion loss, mean alpha-zero baseline
+loss, mean delta regularization, and mean alpha regularization. Paired loss runs
+also write `paired_wrong_summary`. `eval_mode_metrics` compares final
+correct/shuffled/zero/random diffusion loss, mean absolute output difference
+against correct refs, and mean absolute output difference against alpha-zero
+baseline.
 
 ## 6. Manifest Inference
 
