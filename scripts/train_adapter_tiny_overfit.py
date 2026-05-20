@@ -226,6 +226,25 @@ def model_noise_pred(model, batch, noisy_target_images, timesteps, args, retriev
     )[0]
 
 
+def model_noise_pred_alpha_zero(model, batch, noisy_target_images, timesteps, args, retrieval_inputs):
+    adapter = model.unet.up_blocks[2].retrieval_adapter
+    old_alpha = adapter.alpha.detach().clone()
+    with torch.no_grad():
+        try:
+            adapter.alpha.zero_()
+            noise_pred = model_noise_pred(
+                model,
+                batch,
+                noisy_target_images,
+                timesteps,
+                args,
+                retrieval_inputs,
+            ).detach()
+        finally:
+            adapter.alpha.copy_(old_alpha)
+    return noise_pred
+
+
 def sample_noise_and_timesteps(target_images, noise_scheduler, fixed_noise, fixed_timesteps):
     if fixed_noise is not None and fixed_timesteps is not None:
         return fixed_noise, fixed_timesteps
@@ -296,6 +315,16 @@ def main():
         default=0.0,
         help="L1 penalty on adapter alpha.",
     )
+    parser.add_argument(
+        "--wrong-ref-target",
+        choices=("diffusion", "alpha_zero"),
+        default="diffusion",
+        help=(
+            "Training target for shuffled/zero/random refs. "
+            "'diffusion' preserves the old behavior; 'alpha_zero' pushes wrong refs "
+            "back to the frozen baseline prediction."
+        ),
+    )
     cli_args = parser.parse_args()
 
     random.seed(cli_args.seed)
@@ -357,6 +386,7 @@ def main():
     )
     print(f"lambda_delta: {cli_args.lambda_delta}")
     print(f"lambda_alpha: {cli_args.lambda_alpha}")
+    print(f"wrong_ref_target: {cli_args.wrong_ref_target}")
 
     fixed_noise = None
     fixed_timesteps = None
@@ -371,7 +401,15 @@ def main():
 
     last_loss = None
     mode_totals = {
-        mode: {"count": 0, "loss": 0.0, "diff": 0.0, "delta": 0.0, "alpha": 0.0}
+        mode: {
+            "count": 0,
+            "loss": 0.0,
+            "objective": 0.0,
+            "diff": 0.0,
+            "baseline": 0.0,
+            "delta": 0.0,
+            "alpha": 0.0,
+        }
         for mode in ("correct", "shuffled", "zero", "random")
     }
     for step in range(1, cli_args.steps + 1):
@@ -402,14 +440,37 @@ def main():
             retrieval_inputs=step_retrieval_inputs,
         )
         diff_loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
-        regularization = getattr(adapter, "last_regularization", {})
-        delta_reg = regularization.get(
+        forward_regularization = getattr(adapter, "last_regularization", {})
+        delta_reg = forward_regularization.get(
             "delta_abs_mean",
             torch.zeros((), device=target_images.device, dtype=diff_loss.dtype),
         )
+        forward_stats = {
+            key: value.detach().clone()
+            for key, value in getattr(adapter, "last_stats", {}).items()
+            if torch.is_tensor(value)
+        }
+        baseline_loss = torch.zeros((), device=target_images.device, dtype=diff_loss.dtype)
+        if retrieval_mode != "correct" and cli_args.wrong_ref_target == "alpha_zero":
+            baseline_pred = model_noise_pred_alpha_zero(
+                model,
+                batch,
+                noisy_target_images,
+                timesteps,
+                args,
+                step_retrieval_inputs,
+            )
+            objective_loss = F.mse_loss(
+                noise_pred.float(),
+                baseline_pred.float(),
+                reduction="mean",
+            )
+            baseline_loss = objective_loss
+        else:
+            objective_loss = diff_loss
         alpha_reg = adapter.alpha.abs()
         loss = (
-            diff_loss
+            objective_loss
             + 0.5 * (offset_out_sum / 2)
             + cli_args.lambda_delta * delta_reg
             + cli_args.lambda_alpha * alpha_reg
@@ -423,17 +484,19 @@ def main():
         last_loss = loss.item()
         mode_totals[retrieval_mode]["count"] += 1
         mode_totals[retrieval_mode]["loss"] += loss.item()
+        mode_totals[retrieval_mode]["objective"] += objective_loss.item()
         mode_totals[retrieval_mode]["diff"] += diff_loss.item()
+        mode_totals[retrieval_mode]["baseline"] += baseline_loss.item()
         mode_totals[retrieval_mode]["delta"] += float(delta_reg.detach().cpu())
         mode_totals[retrieval_mode]["alpha"] += float(alpha_reg.detach().cpu())
 
         if step == 1 or step % cli_args.log_every == 0 or step == cli_args.steps:
-            stats = getattr(adapter, "last_stats", {})
-            pregate_norm = float(stats.get("pregate_norm", torch.tensor(0.0)).detach().cpu())
-            delta_abs_mean = float(stats.get("delta_abs_mean", torch.tensor(0.0)).detach().cpu())
+            pregate_norm = float(forward_stats.get("pregate_norm", torch.tensor(0.0)).detach().cpu())
+            delta_abs_mean = float(forward_stats.get("delta_abs_mean", torch.tensor(0.0)).detach().cpu())
             print(
                 f"step={step} mode={retrieval_mode} loss={loss.item():.6f} "
-                f"diff={diff_loss.item():.6f} "
+                f"objective={objective_loss.item():.6f} diff={diff_loss.item():.6f} "
+                f"baseline={baseline_loss.item():.6f} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
                 f"delta_reg={float(delta_reg.detach().cpu()):.6e} "
                 f"alpha_reg={float(alpha_reg.detach().cpu()):.6e} "
@@ -449,7 +512,9 @@ def main():
             mode_summary[mode] = {
                 "count": 0,
                 "mean_loss": None,
+                "mean_objective": None,
                 "mean_diff": None,
+                "mean_baseline": None,
                 "mean_delta_reg": None,
                 "mean_alpha_reg": None,
             }
@@ -457,7 +522,9 @@ def main():
         mode_summary[mode] = {
             "count": count,
             "mean_loss": totals["loss"] / count,
+            "mean_objective": totals["objective"] / count,
             "mean_diff": totals["diff"] / count,
+            "mean_baseline": totals["baseline"] / count,
             "mean_delta_reg": totals["delta"] / count,
             "mean_alpha_reg": totals["alpha"] / count,
         }
@@ -502,18 +569,22 @@ def main():
             "correct": {
                 "diff_loss": F.mse_loss(out_correct.float(), noise.float(), reduction="mean").item(),
                 "mean_abs_diff_vs_correct": 0.0,
+                "mean_abs_diff_vs_alpha_zero": tensor_mean_abs_diff(out_correct, out_alpha_zero),
             },
             "shuffled": {
                 "diff_loss": F.mse_loss(out_shuffled.float(), noise.float(), reduction="mean").item(),
                 "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_shuffled),
+                "mean_abs_diff_vs_alpha_zero": tensor_mean_abs_diff(out_shuffled, out_alpha_zero),
             },
             "zero": {
                 "diff_loss": F.mse_loss(out_zero_refs.float(), noise.float(), reduction="mean").item(),
                 "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_zero_refs),
+                "mean_abs_diff_vs_alpha_zero": tensor_mean_abs_diff(out_zero_refs, out_alpha_zero),
             },
             "random": {
                 "diff_loss": F.mse_loss(out_random_refs.float(), noise.float(), reduction="mean").item(),
                 "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_random_refs),
+                "mean_abs_diff_vs_alpha_zero": tensor_mean_abs_diff(out_random_refs, out_alpha_zero),
             },
         }
         ref_ablation_diff = tensor_mean_abs_diff(out_correct, out_shuffled)
@@ -535,7 +606,8 @@ def main():
     for mode, summary in eval_mode_metrics.items():
         print(
             f"eval_mode[{mode}]: diff_loss={summary['diff_loss']:.6f} "
-            f"mean_abs_diff_vs_correct={summary['mean_abs_diff_vs_correct']:.8f}"
+            f"mean_abs_diff_vs_correct={summary['mean_abs_diff_vs_correct']:.8f} "
+            f"mean_abs_diff_vs_alpha_zero={summary['mean_abs_diff_vs_alpha_zero']:.8f}"
         )
     for mode, summary in mode_summary.items():
         if summary["count"] == 0:
@@ -544,7 +616,9 @@ def main():
             print(
                 f"mode_summary[{mode}]: count={summary['count']} "
                 f"mean_loss={summary['mean_loss']:.6f} "
+                f"mean_objective={summary['mean_objective']:.6f} "
                 f"mean_diff={summary['mean_diff']:.6f} "
+                f"mean_baseline={summary['mean_baseline']:.6f} "
                 f"mean_delta_reg={summary['mean_delta_reg']:.6e} "
                 f"mean_alpha_reg={summary['mean_alpha_reg']:.6e}"
             )
@@ -564,6 +638,7 @@ def main():
         },
         "lambda_delta": cli_args.lambda_delta,
         "lambda_alpha": cli_args.lambda_alpha,
+        "wrong_ref_target": cli_args.wrong_ref_target,
         "mode_summary": mode_summary,
         "eval_mode_metrics": eval_mode_metrics,
         "final_loss": last_loss,

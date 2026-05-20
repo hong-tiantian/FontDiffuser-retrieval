@@ -168,6 +168,7 @@ python scripts/train_adapter_manifest_cases.py `
   --p-shuffled 0.10 `
   --p-zero 0.10 `
   --p-random 0.10 `
+  --wrong-ref-target alpha_zero `
   --lambda-delta 0.001 `
   --lambda-alpha 0 `
   --device cuda:0 `
@@ -177,10 +178,14 @@ python scripts/train_adapter_manifest_cases.py `
 
 The default behavior is unchanged unless `--retrieval-mode-augmentation` is
 passed. The script prints and writes `mode_summary` to `metrics.json`, including
-per-mode counts, mean loss, mean diffusion loss, mean delta regularization, and
-mean alpha regularization. It also writes `eval_mode_metrics`, which compares
-final correct/shuffled/zero/random diffusion loss and mean absolute output
-difference against correct refs.
+per-mode counts, mean loss, mean objective loss, mean diffusion loss, mean
+alpha-zero baseline loss, mean delta regularization, and mean alpha
+regularization. Use `--wrong-ref-target alpha_zero` for the diagnostic training
+that forces shuffled/zero/random refs back toward the frozen baseline instead
+of letting wrong refs optimize the same diffusion target. It also writes
+`eval_mode_metrics`, which compares final correct/shuffled/zero/random
+diffusion loss, mean absolute output difference against correct refs, and mean
+absolute output difference against alpha-zero baseline.
 
 ## 6. Manifest Inference
 
