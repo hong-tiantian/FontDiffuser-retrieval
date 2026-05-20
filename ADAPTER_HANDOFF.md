@@ -149,6 +149,39 @@ retrieval_bundle.pth   # adapter + direct 1x1 projections + scale settings
 
 Use `retrieval_bundle.pth` for direct-skip runs.
 
+### Retrieval Mode Augmentation
+
+`scripts/train_adapter_manifest_cases.py` now supports training-time retrieval
+mode augmentation. Enable it with:
+
+```powershell
+python scripts/train_adapter_manifest_cases.py `
+  --ckpt-dir D:/htt/baseline_clean/FontDiffuser/ckpt `
+  --manifest D:/htt/FontDiffuser-retrieval/examples/tiny_overfit_manifest.csv `
+  --plan-a-root D:/htt/callirag `
+  --steps 1000 `
+  --adapter-scale 10 `
+  --offset-scale 0 `
+  --direct-scale 1 `
+  --retrieval-mode-augmentation `
+  --p-correct 0.70 `
+  --p-shuffled 0.10 `
+  --p-zero 0.10 `
+  --p-random 0.10 `
+  --lambda-delta 0.001 `
+  --lambda-alpha 0 `
+  --device cuda:0 `
+  --save-checkpoint `
+  --output-dir outputs/adapter_manifest_aug_reg_s10
+```
+
+The default behavior is unchanged unless `--retrieval-mode-augmentation` is
+passed. The script prints and writes `mode_summary` to `metrics.json`, including
+per-mode counts, mean loss, mean diffusion loss, mean delta regularization, and
+mean alpha regularization. It also writes `eval_mode_metrics`, which compares
+final correct/shuffled/zero/random diffusion loss and mean absolute output
+difference against correct refs.
+
 ## 6. Manifest Inference
 
 After a manifest-case training run, generate comparison images with:

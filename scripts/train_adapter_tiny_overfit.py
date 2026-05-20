@@ -150,6 +150,53 @@ def clone_retrieval_inputs(retrieval_inputs):
     return {key: value.clone() for key, value in retrieval_inputs.items()}
 
 
+def make_retrieval_inputs_for_mode(retrieval_inputs, mode):
+    inputs = clone_retrieval_inputs(retrieval_inputs)
+    if mode == "correct":
+        return inputs
+    if mode == "shuffled":
+        batch_size = inputs["ref_images"].shape[0]
+        if batch_size > 1:
+            for key in ("ref_images", "slot_ids", "role_ids", "mask"):
+                inputs[key] = torch.roll(inputs[key], shifts=1, dims=0)
+        else:
+            inputs["ref_images"] = torch.roll(inputs["ref_images"], shifts=1, dims=1)
+            inputs["slot_ids"] = torch.roll(inputs["slot_ids"], shifts=1, dims=1)
+            inputs["role_ids"] = torch.roll(inputs["role_ids"], shifts=1, dims=1)
+            inputs["mask"] = torch.roll(inputs["mask"], shifts=1, dims=1)
+        return inputs
+    if mode == "zero":
+        inputs["ref_images"] = torch.zeros_like(inputs["ref_images"])
+        return inputs
+    if mode == "random":
+        inputs["ref_images"] = torch.randn_like(inputs["ref_images"])
+        return inputs
+    raise ValueError(f"unknown retrieval mode: {mode}")
+
+
+def sample_retrieval_mode(args):
+    weights = [
+        ("correct", args.p_correct),
+        ("shuffled", args.p_shuffled),
+        ("zero", args.p_zero),
+        ("random", args.p_random),
+    ]
+    if any(weight < 0 for _, weight in weights):
+        raise ValueError("retrieval mode probabilities must be non-negative.")
+    total = sum(weight for _, weight in weights)
+    if total <= 0:
+        raise ValueError("retrieval mode probabilities must sum to a positive value.")
+    threshold = random.random() * total
+    cumulative = 0.0
+    for mode, weight in weights:
+        if weight == 0:
+            continue
+        cumulative += weight
+        if threshold < cumulative:
+            return mode
+    return weights[-1][0]
+
+
 def trainable_retrieval_parameters(model):
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -228,6 +275,27 @@ def main():
         action="store_true",
         help="Resample diffusion noise/timestep every step. Default keeps them fixed for true tiny-overfit diagnostics.",
     )
+    parser.add_argument(
+        "--retrieval-mode-augmentation",
+        action="store_true",
+        help="Sample correct/shuffled/zero/random retrieval refs during training.",
+    )
+    parser.add_argument("--p-correct", type=float, default=0.70)
+    parser.add_argument("--p-shuffled", type=float, default=0.10)
+    parser.add_argument("--p-zero", type=float, default=0.10)
+    parser.add_argument("--p-random", type=float, default=0.10)
+    parser.add_argument(
+        "--lambda-delta",
+        type=float,
+        default=0.0,
+        help="L1 penalty on retrieval delta_h mean absolute value.",
+    )
+    parser.add_argument(
+        "--lambda-alpha",
+        type=float,
+        default=0.0,
+        help="L1 penalty on adapter alpha.",
+    )
     cli_args = parser.parse_args()
 
     random.seed(cli_args.seed)
@@ -281,6 +349,14 @@ def main():
     print(f"adapter_scale: {cli_args.adapter_scale}")
     print(f"offset_scale: {cli_args.offset_scale}")
     print(f"direct_scale: {cli_args.direct_scale}")
+    print(f"retrieval_mode_augmentation: {cli_args.retrieval_mode_augmentation}")
+    print(
+        "mode_probabilities: "
+        f"correct={cli_args.p_correct} shuffled={cli_args.p_shuffled} "
+        f"zero={cli_args.p_zero} random={cli_args.p_random}"
+    )
+    print(f"lambda_delta: {cli_args.lambda_delta}")
+    print(f"lambda_alpha: {cli_args.lambda_alpha}")
 
     fixed_noise = None
     fixed_timesteps = None
@@ -294,6 +370,10 @@ def main():
         ).long()
 
     last_loss = None
+    mode_totals = {
+        mode: {"count": 0, "loss": 0.0, "diff": 0.0, "delta": 0.0, "alpha": 0.0}
+        for mode in ("correct", "shuffled", "zero", "random")
+    }
     for step in range(1, cli_args.steps + 1):
         target_images = batch["target_images"]
         noise, timesteps = sample_noise_and_timesteps(
@@ -303,6 +383,15 @@ def main():
             fixed_timesteps=fixed_timesteps,
         )
         noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
+        retrieval_mode = (
+            sample_retrieval_mode(cli_args)
+            if cli_args.retrieval_mode_augmentation
+            else "correct"
+        )
+        step_retrieval_inputs = make_retrieval_inputs_for_mode(
+            batch["retrieval_inputs"],
+            retrieval_mode,
+        )
 
         noise_pred, offset_out_sum = model(
             x_t=noisy_target_images,
@@ -310,10 +399,21 @@ def main():
             style_images=batch["style_images"],
             content_images=batch["content_images"],
             content_encoder_downsample_size=args.content_encoder_downsample_size,
-            retrieval_inputs=batch["retrieval_inputs"],
+            retrieval_inputs=step_retrieval_inputs,
         )
         diff_loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
-        loss = diff_loss + 0.5 * (offset_out_sum / 2)
+        regularization = getattr(adapter, "last_regularization", {})
+        delta_reg = regularization.get(
+            "delta_abs_mean",
+            torch.zeros((), device=target_images.device, dtype=diff_loss.dtype),
+        )
+        alpha_reg = adapter.alpha.abs()
+        loss = (
+            diff_loss
+            + 0.5 * (offset_out_sum / 2)
+            + cli_args.lambda_delta * delta_reg
+            + cli_args.lambda_alpha * alpha_reg
+        )
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -321,18 +421,46 @@ def main():
         grad_norm = torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=1.0)
         optimizer.step()
         last_loss = loss.item()
+        mode_totals[retrieval_mode]["count"] += 1
+        mode_totals[retrieval_mode]["loss"] += loss.item()
+        mode_totals[retrieval_mode]["diff"] += diff_loss.item()
+        mode_totals[retrieval_mode]["delta"] += float(delta_reg.detach().cpu())
+        mode_totals[retrieval_mode]["alpha"] += float(alpha_reg.detach().cpu())
 
         if step == 1 or step % cli_args.log_every == 0 or step == cli_args.steps:
             stats = getattr(adapter, "last_stats", {})
             pregate_norm = float(stats.get("pregate_norm", torch.tensor(0.0)).detach().cpu())
             delta_abs_mean = float(stats.get("delta_abs_mean", torch.tensor(0.0)).detach().cpu())
             print(
-                f"step={step} loss={loss.item():.6f} diff={diff_loss.item():.6f} "
+                f"step={step} mode={retrieval_mode} loss={loss.item():.6f} "
+                f"diff={diff_loss.item():.6f} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
+                f"delta_reg={float(delta_reg.detach().cpu()):.6e} "
+                f"alpha_reg={float(alpha_reg.detach().cpu()):.6e} "
                 f"alpha={adapter.alpha.item():.8f} "
                 f"alpha_grad={alpha_grad:.6e} grad_norm={float(grad_norm):.6e} "
                 f"pregate_norm={pregate_norm:.6e} delta_abs_mean={delta_abs_mean:.6e}"
             )
+
+    mode_summary = {}
+    for mode, totals in mode_totals.items():
+        count = totals["count"]
+        if count == 0:
+            mode_summary[mode] = {
+                "count": 0,
+                "mean_loss": None,
+                "mean_diff": None,
+                "mean_delta_reg": None,
+                "mean_alpha_reg": None,
+            }
+            continue
+        mode_summary[mode] = {
+            "count": count,
+            "mean_loss": totals["loss"] / count,
+            "mean_diff": totals["diff"] / count,
+            "mean_delta_reg": totals["delta"] / count,
+            "mean_alpha_reg": totals["alpha"] / count,
+        }
 
     model.eval()
     with torch.no_grad():
@@ -355,24 +483,39 @@ def main():
         )
         adapter.alpha.copy_(old_alpha)
 
-        shuffled_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
-        shuffled_inputs["ref_images"] = torch.roll(shuffled_inputs["ref_images"], shifts=1, dims=1)
+        shuffled_inputs = make_retrieval_inputs_for_mode(batch["retrieval_inputs"], "shuffled")
         out_shuffled = model_noise_pred(
             model, batch, noisy_target_images, timesteps, args, shuffled_inputs
         )
 
-        zero_ref_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
-        zero_ref_inputs["ref_images"] = torch.zeros_like(zero_ref_inputs["ref_images"])
+        zero_ref_inputs = make_retrieval_inputs_for_mode(batch["retrieval_inputs"], "zero")
         out_zero_refs = model_noise_pred(
             model, batch, noisy_target_images, timesteps, args, zero_ref_inputs
         )
 
-        random_ref_inputs = clone_retrieval_inputs(batch["retrieval_inputs"])
-        random_ref_inputs["ref_images"] = torch.randn_like(random_ref_inputs["ref_images"])
+        random_ref_inputs = make_retrieval_inputs_for_mode(batch["retrieval_inputs"], "random")
         out_random_refs = model_noise_pred(
             model, batch, noisy_target_images, timesteps, args, random_ref_inputs
         )
 
+        eval_mode_metrics = {
+            "correct": {
+                "diff_loss": F.mse_loss(out_correct.float(), noise.float(), reduction="mean").item(),
+                "mean_abs_diff_vs_correct": 0.0,
+            },
+            "shuffled": {
+                "diff_loss": F.mse_loss(out_shuffled.float(), noise.float(), reduction="mean").item(),
+                "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_shuffled),
+            },
+            "zero": {
+                "diff_loss": F.mse_loss(out_zero_refs.float(), noise.float(), reduction="mean").item(),
+                "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_zero_refs),
+            },
+            "random": {
+                "diff_loss": F.mse_loss(out_random_refs.float(), noise.float(), reduction="mean").item(),
+                "mean_abs_diff_vs_correct": tensor_mean_abs_diff(out_correct, out_random_refs),
+            },
+        }
         ref_ablation_diff = tensor_mean_abs_diff(out_correct, out_shuffled)
         alpha_zero_diff = tensor_mean_abs_diff(out_correct, out_alpha_zero)
         zero_refs_diff = tensor_mean_abs_diff(out_correct, out_zero_refs)
@@ -389,6 +532,22 @@ def main():
     print(f"alpha_zero_mean_abs_diff: {alpha_zero_diff:.8f}")
     print(f"zero_refs_mean_abs_diff: {zero_refs_diff:.8f}")
     print(f"random_refs_mean_abs_diff: {random_refs_diff:.8f}")
+    for mode, summary in eval_mode_metrics.items():
+        print(
+            f"eval_mode[{mode}]: diff_loss={summary['diff_loss']:.6f} "
+            f"mean_abs_diff_vs_correct={summary['mean_abs_diff_vs_correct']:.8f}"
+        )
+    for mode, summary in mode_summary.items():
+        if summary["count"] == 0:
+            print(f"mode_summary[{mode}]: count=0")
+        else:
+            print(
+                f"mode_summary[{mode}]: count={summary['count']} "
+                f"mean_loss={summary['mean_loss']:.6f} "
+                f"mean_diff={summary['mean_diff']:.6f} "
+                f"mean_delta_reg={summary['mean_delta_reg']:.6e} "
+                f"mean_alpha_reg={summary['mean_alpha_reg']:.6e}"
+            )
 
     metrics = {
         "steps": cli_args.steps,
@@ -396,6 +555,17 @@ def main():
         "adapter_scale": cli_args.adapter_scale,
         "offset_scale": cli_args.offset_scale,
         "direct_scale": cli_args.direct_scale,
+        "retrieval_mode_augmentation": cli_args.retrieval_mode_augmentation,
+        "mode_probabilities": {
+            "correct": cli_args.p_correct,
+            "shuffled": cli_args.p_shuffled,
+            "zero": cli_args.p_zero,
+            "random": cli_args.p_random,
+        },
+        "lambda_delta": cli_args.lambda_delta,
+        "lambda_alpha": cli_args.lambda_alpha,
+        "mode_summary": mode_summary,
+        "eval_mode_metrics": eval_mode_metrics,
         "final_loss": last_loss,
         "final_alpha": adapter.alpha.item(),
         "final_pregate_norm": final_pregate_norm,

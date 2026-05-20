@@ -165,6 +165,9 @@ class RetrievalAdapter(nn.Module):
         delta_h = delta_tokens.transpose(1, 2).reshape(
             batch_size, self.feat_channels, height, width
         )
+        self.last_regularization = {
+            "delta_abs_mean": delta_h.abs().mean(),
+        }
         self.last_stats = {
             "alpha": self.alpha.detach(),
             "pregate_norm": pregate.detach().norm(dim=-1).mean(),
