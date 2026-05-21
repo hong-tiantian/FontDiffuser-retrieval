@@ -187,6 +187,22 @@ correct/shuffled/zero/random diffusion loss, mean absolute output difference
 against correct refs, and mean absolute output difference against alpha-zero
 baseline.
 
+Latest weighted paired-loss diagnostic result:
+
+```text
+correct vs alpha_zero: 0.04382741
+shuffled vs alpha_zero: 0.01457170
+zero vs alpha_zero: 0.00819448
+random vs alpha_zero: 0.01109788
+correct vs shuffled: 0.03676412
+final_delta_abs_mean: 0.34144604
+```
+
+This meets the current diagnostic criterion: correct refs still move the
+prediction away from alpha-zero, while shuffled/zero/random refs are much closer
+to alpha-zero. Treat this as retrieval-specific noise-pred evidence, not yet a
+visual structure-quality claim.
+
 ## 6. Manifest Inference
 
 After a manifest-case training run, generate comparison images with:
@@ -194,16 +210,16 @@ After a manifest-case training run, generate comparison images with:
 ```powershell
 python scripts/run_adapter_manifest_inference.py `
   --ckpt-dir D:/htt/baseline_clean/FontDiffuser/ckpt `
-  --retrieval-bundle outputs/adapter_manifest_direct_s10/retrieval_bundle.pth `
+  --retrieval-bundle outputs/adapter_manifest_paired_weighted_s10/retrieval_bundle.pth `
   --manifest D:/htt/FontDiffuser-retrieval/examples/tiny_overfit_manifest.csv `
   --plan-a-root D:/htt/callirag `
   --num-steps 20 `
-  --guidance-scale 7.5 `
+  --guidance-scale 3 `
   --adapter-scale 10 `
   --offset-scale 0 `
-  --direct-scale 1 `
+  --direct-scale 0.25 `
   --device cuda:0 `
-  --output-dir outputs/adapter_manifest_inference_direct_s10
+  --output-dir outputs/infer_paired_weighted_g3_s10_d025
 ```
 
 Output groups:
