@@ -208,6 +208,32 @@ def parse_wrong_modes(modes_text):
     return modes
 
 
+def parse_wrong_mode_weights(weights_text, modes):
+    weights = {mode: 1.0 for mode in modes}
+    if not weights_text:
+        return weights
+
+    valid_modes = set(modes)
+    for item in weights_text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"wrong mode weight must be MODE=WEIGHT, got: {item}")
+        mode, weight_text = item.split("=", 1)
+        mode = mode.strip()
+        if mode not in valid_modes:
+            raise ValueError(f"weight provided for mode not in --paired-wrong-modes: {mode}")
+        weight = float(weight_text)
+        if weight < 0:
+            raise ValueError("paired wrong mode weights must be non-negative.")
+        weights[mode] = weight
+
+    if sum(weights.values()) <= 0:
+        raise ValueError("paired wrong mode weights must sum to a positive value.")
+    return weights
+
+
 def trainable_retrieval_parameters(model):
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -348,6 +374,12 @@ def main():
         help="Comma-separated wrong modes for paired loss. Valid: shuffled,zero,random.",
     )
     parser.add_argument(
+        "--paired-wrong-weights",
+        type=str,
+        default="",
+        help="Optional comma-separated MODE=WEIGHT list for paired wrong modes.",
+    )
+    parser.add_argument(
         "--lambda-wrong-ref",
         type=float,
         default=1.0,
@@ -416,8 +448,16 @@ def main():
     print(f"lambda_alpha: {cli_args.lambda_alpha}")
     print(f"wrong_ref_target: {cli_args.wrong_ref_target}")
     paired_wrong_modes = parse_wrong_modes(cli_args.paired_wrong_modes)
+    paired_wrong_weights = parse_wrong_mode_weights(
+        cli_args.paired_wrong_weights,
+        paired_wrong_modes,
+    )
     print(f"paired_wrong_ref_loss: {cli_args.paired_wrong_ref_loss}")
     print(f"paired_wrong_modes: {','.join(paired_wrong_modes)}")
+    print(
+        "paired_wrong_weights: "
+        + ",".join(f"{mode}={paired_wrong_weights[mode]}" for mode in paired_wrong_modes)
+    )
     print(f"lambda_wrong_ref: {cli_args.lambda_wrong_ref}")
 
     fixed_noise = None
@@ -510,7 +550,9 @@ def main():
         paired_wrong_loss = torch.zeros((), device=target_images.device, dtype=objective_loss.dtype)
         paired_wrong_log = []
         if cli_args.paired_wrong_ref_loss:
+            paired_wrong_weight_sum = sum(paired_wrong_weights[mode] for mode in paired_wrong_modes)
             for wrong_mode in paired_wrong_modes:
+                wrong_weight = paired_wrong_weights[wrong_mode]
                 wrong_inputs = make_retrieval_inputs_for_mode(
                     batch["retrieval_inputs"],
                     wrong_mode,
@@ -537,12 +579,14 @@ def main():
                     reduction="mean",
                 )
                 wrong_diff = F.mse_loss(wrong_pred.float(), noise.float(), reduction="mean")
-                paired_wrong_loss = paired_wrong_loss + wrong_objective
+                paired_wrong_loss = paired_wrong_loss + wrong_weight * wrong_objective
                 paired_wrong_totals[wrong_mode]["count"] += 1
                 paired_wrong_totals[wrong_mode]["objective"] += wrong_objective.item()
                 paired_wrong_totals[wrong_mode]["diff"] += wrong_diff.item()
-                paired_wrong_log.append(f"{wrong_mode}:{wrong_objective.item():.6f}")
-            paired_wrong_loss = paired_wrong_loss / len(paired_wrong_modes)
+                paired_wrong_log.append(
+                    f"{wrong_mode}:{wrong_objective.item():.6f}x{wrong_weight:g}"
+                )
+            paired_wrong_loss = paired_wrong_loss / paired_wrong_weight_sum
         alpha_reg = adapter.alpha.abs()
         loss = (
             objective_loss
@@ -743,6 +787,7 @@ def main():
         "wrong_ref_target": cli_args.wrong_ref_target,
         "paired_wrong_ref_loss": cli_args.paired_wrong_ref_loss,
         "paired_wrong_modes": paired_wrong_modes,
+        "paired_wrong_weights": paired_wrong_weights,
         "lambda_wrong_ref": cli_args.lambda_wrong_ref,
         "mode_summary": mode_summary,
         "paired_wrong_summary": paired_wrong_summary,

@@ -165,13 +165,14 @@ python scripts/train_adapter_manifest_cases.py `
   --offset-scale 0 `
   --direct-scale 1 `
   --paired-wrong-ref-loss `
-  --paired-wrong-modes shuffled `
+  --paired-wrong-modes shuffled,zero,random `
+  --paired-wrong-weights shuffled=2,zero=0.3,random=0.3 `
   --lambda-wrong-ref 1 `
-  --lambda-delta 0.001 `
+  --lambda-delta 0.003 `
   --lambda-alpha 0 `
   --device cuda:0 `
   --save-checkpoint `
-  --output-dir outputs/adapter_manifest_paired_shuf_s10
+  --output-dir outputs/adapter_manifest_paired_weighted_s10
 ```
 
 The older sampled augmentation path remains available with
@@ -179,7 +180,9 @@ The older sampled augmentation path remains available with
 prints and writes `mode_summary` to `metrics.json`, including per-mode counts,
 mean loss, mean objective loss, mean diffusion loss, mean alpha-zero baseline
 loss, mean delta regularization, and mean alpha regularization. Paired loss runs
-also write `paired_wrong_summary`. `eval_mode_metrics` compares final
+also write `paired_wrong_summary`. Use `--paired-wrong-weights` when shuffled
+hard negatives need a stronger baseline penalty than zero/random negatives.
+`eval_mode_metrics` compares final
 correct/shuffled/zero/random diffusion loss, mean absolute output difference
 against correct refs, and mean absolute output difference against alpha-zero
 baseline.
