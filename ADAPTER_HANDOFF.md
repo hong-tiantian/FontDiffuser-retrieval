@@ -203,6 +203,35 @@ prediction away from alpha-zero, while shuffled/zero/random refs are much closer
 to alpha-zero. Treat this as retrieval-specific noise-pred evidence, not yet a
 visual structure-quality claim.
 
+### P6 x0 Edge Diagnostic
+
+If paired hard negatives are visually too weak, run one short diagnostic with a
+correct-ref Sobel edge loss on predicted x0:
+
+```powershell
+python scripts/train_adapter_manifest_cases.py `
+  --ckpt-dir D:/htt/baseline_clean/FontDiffuser/ckpt `
+  --manifest D:/htt/FontDiffuser-retrieval/examples/tiny_overfit_manifest.csv `
+  --plan-a-root D:/htt/callirag `
+  --steps 1000 `
+  --adapter-scale 10 `
+  --offset-scale 0 `
+  --direct-scale 1 `
+  --paired-wrong-ref-loss `
+  --paired-wrong-modes shuffled,zero,random `
+  --paired-wrong-weights shuffled=2,zero=0.3,random=0.3 `
+  --lambda-wrong-ref 1 `
+  --lambda-delta 0.003 `
+  --lambda-x0-edge 0.02 `
+  --device cuda:0 `
+  --save-checkpoint `
+  --output-dir outputs/adapter_manifest_p6_x0edge_l002
+```
+
+This is a diagnostic, not a final objective. Check whether correct refs become
+visibly more structural than shuffled refs. If correct gets blurrier without
+clear structure gains, stop this branch and write it as a negative result.
+
 ## 6. Manifest Inference
 
 After a manifest-case training run, generate comparison images with:

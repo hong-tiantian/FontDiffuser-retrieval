@@ -256,6 +256,39 @@ def model_noise_pred_alpha_zero(model, batch, noisy_target_images, timesteps, ar
     return noise_pred
 
 
+def predict_x0_from_noise(noisy_images, noise_pred, timesteps, noise_scheduler):
+    alphas_cumprod = noise_scheduler.alphas_cumprod.to(
+        device=noisy_images.device,
+        dtype=noisy_images.dtype,
+    )
+    alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+    beta_prod_t = 1.0 - alpha_prod_t
+    return (noisy_images - beta_prod_t.sqrt() * noise_pred) / alpha_prod_t.sqrt()
+
+
+def sobel_edges(images):
+    gray = images.mean(dim=1, keepdim=True)
+    kernel_x = torch.tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+        device=images.device,
+        dtype=images.dtype,
+    ).view(1, 1, 3, 3)
+    kernel_y = torch.tensor(
+        [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+        device=images.device,
+        dtype=images.dtype,
+    ).view(1, 1, 3, 3)
+    grad_x = F.conv2d(gray, kernel_x, padding=1)
+    grad_y = F.conv2d(gray, kernel_y, padding=1)
+    return torch.sqrt(grad_x.square() + grad_y.square() + 1e-6)
+
+
+def x0_edge_loss(noisy_images, noise_pred, target_images, timesteps, noise_scheduler):
+    pred_x0 = predict_x0_from_noise(noisy_images, noise_pred, timesteps, noise_scheduler)
+    pred_x0 = pred_x0.clamp(-1.0, 1.0)
+    return F.l1_loss(sobel_edges(pred_x0), sobel_edges(target_images), reduction="mean")
+
+
 def sample_noise_and_timesteps(target_images, noise_scheduler, fixed_noise, fixed_timesteps):
     if fixed_noise is not None and fixed_timesteps is not None:
         return fixed_noise, fixed_timesteps
@@ -325,6 +358,12 @@ def main():
         type=float,
         default=0.0,
         help="L1 penalty on adapter alpha.",
+    )
+    parser.add_argument(
+        "--lambda-x0-edge",
+        type=float,
+        default=0.0,
+        help="Correct-ref Sobel edge loss on predicted x0.",
     )
     parser.add_argument(
         "--wrong-ref-target",
@@ -414,6 +453,7 @@ def main():
     )
     print(f"lambda_delta: {cli_args.lambda_delta}")
     print(f"lambda_alpha: {cli_args.lambda_alpha}")
+    print(f"lambda_x0_edge: {cli_args.lambda_x0_edge}")
     print(f"wrong_ref_target: {cli_args.wrong_ref_target}")
     paired_wrong_modes = parse_wrong_modes(cli_args.paired_wrong_modes)
     print(f"paired_wrong_ref_loss: {cli_args.paired_wrong_ref_loss}")
@@ -439,6 +479,7 @@ def main():
             "objective": 0.0,
             "diff": 0.0,
             "baseline": 0.0,
+            "x0_edge": 0.0,
             "delta": 0.0,
             "alpha": 0.0,
         }
@@ -507,6 +548,16 @@ def main():
             baseline_loss = objective_loss
         else:
             objective_loss = diff_loss
+        if retrieval_mode == "correct" and cli_args.lambda_x0_edge != 0:
+            x0_struct_loss = x0_edge_loss(
+                noisy_target_images,
+                noise_pred.float(),
+                target_images.float(),
+                timesteps,
+                noise_scheduler,
+            )
+        else:
+            x0_struct_loss = torch.zeros((), device=target_images.device, dtype=objective_loss.dtype)
         paired_wrong_loss = torch.zeros((), device=target_images.device, dtype=objective_loss.dtype)
         paired_wrong_log = []
         if cli_args.paired_wrong_ref_loss:
@@ -547,6 +598,7 @@ def main():
         loss = (
             objective_loss
             + cli_args.lambda_wrong_ref * paired_wrong_loss
+            + cli_args.lambda_x0_edge * x0_struct_loss
             + 0.5 * (offset_out_sum / 2)
             + cli_args.lambda_delta * delta_reg
             + cli_args.lambda_alpha * alpha_reg
@@ -563,6 +615,7 @@ def main():
         mode_totals[retrieval_mode]["objective"] += objective_loss.item()
         mode_totals[retrieval_mode]["diff"] += diff_loss.item()
         mode_totals[retrieval_mode]["baseline"] += baseline_loss.item()
+        mode_totals[retrieval_mode]["x0_edge"] += x0_struct_loss.item()
         mode_totals[retrieval_mode]["delta"] += float(delta_reg.detach().cpu())
         mode_totals[retrieval_mode]["alpha"] += float(alpha_reg.detach().cpu())
 
@@ -573,6 +626,7 @@ def main():
                 f"step={step} mode={retrieval_mode} loss={loss.item():.6f} "
                 f"objective={objective_loss.item():.6f} diff={diff_loss.item():.6f} "
                 f"baseline={baseline_loss.item():.6f} "
+                f"x0_edge={x0_struct_loss.item():.6f} "
                 f"paired_wrong={paired_wrong_loss.item():.6f} "
                 f"paired_modes={','.join(paired_wrong_log) if paired_wrong_log else 'none'} "
                 f"offset={float(offset_out_sum.detach().cpu()):.6f} "
@@ -593,6 +647,7 @@ def main():
                 "mean_objective": None,
                 "mean_diff": None,
                 "mean_baseline": None,
+                "mean_x0_edge": None,
                 "mean_delta_reg": None,
                 "mean_alpha_reg": None,
             }
@@ -603,6 +658,7 @@ def main():
             "mean_objective": totals["objective"] / count,
             "mean_diff": totals["diff"] / count,
             "mean_baseline": totals["baseline"] / count,
+            "mean_x0_edge": totals["x0_edge"] / count,
             "mean_delta_reg": totals["delta"] / count,
             "mean_alpha_reg": totals["alpha"] / count,
         }
@@ -712,6 +768,7 @@ def main():
                 f"mean_objective={summary['mean_objective']:.6f} "
                 f"mean_diff={summary['mean_diff']:.6f} "
                 f"mean_baseline={summary['mean_baseline']:.6f} "
+                f"mean_x0_edge={summary['mean_x0_edge']:.6f} "
                 f"mean_delta_reg={summary['mean_delta_reg']:.6e} "
                 f"mean_alpha_reg={summary['mean_alpha_reg']:.6e}"
             )
@@ -740,6 +797,7 @@ def main():
         },
         "lambda_delta": cli_args.lambda_delta,
         "lambda_alpha": cli_args.lambda_alpha,
+        "lambda_x0_edge": cli_args.lambda_x0_edge,
         "wrong_ref_target": cli_args.wrong_ref_target,
         "paired_wrong_ref_loss": cli_args.paired_wrong_ref_loss,
         "paired_wrong_modes": paired_wrong_modes,
