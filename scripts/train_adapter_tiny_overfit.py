@@ -208,6 +208,36 @@ def parse_wrong_modes(modes_text):
     return modes
 
 
+def parse_paired_wrong_weights(weights_text, paired_wrong_modes):
+    valid_modes = {"shuffled", "zero", "random"}
+    weights = {mode: 1.0 for mode in paired_wrong_modes}
+    if weights_text is None or not str(weights_text).strip():
+        return weights
+
+    for entry in str(weights_text).split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise ValueError(
+                f"invalid paired wrong weight entry '{entry}'; expected format mode=weight"
+            )
+        mode, weight_text = entry.split("=", 1)
+        mode = mode.strip()
+        weight_text = weight_text.strip()
+        if mode not in valid_modes:
+            raise ValueError(f"unknown paired wrong weight mode: {mode}")
+        if mode not in paired_wrong_modes:
+            raise ValueError(
+                f"paired wrong weight mode '{mode}' is not listed in --paired-wrong-modes"
+            )
+        weight = float(weight_text)
+        if weight < 0:
+            raise ValueError(f"paired wrong weight for '{mode}' must be non-negative.")
+        weights[mode] = weight
+    return weights
+
+
 def trainable_retrieval_parameters(model):
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -387,6 +417,12 @@ def main():
         help="Comma-separated wrong modes for paired loss. Valid: shuffled,zero,random.",
     )
     parser.add_argument(
+        "--paired-wrong-weights",
+        type=str,
+        default=None,
+        help="Comma-separated per-mode weights for paired loss, e.g. shuffled=2,zero=0.3,random=0.3.",
+    )
+    parser.add_argument(
         "--lambda-wrong-ref",
         type=float,
         default=1.0,
@@ -456,8 +492,16 @@ def main():
     print(f"lambda_x0_edge: {cli_args.lambda_x0_edge}")
     print(f"wrong_ref_target: {cli_args.wrong_ref_target}")
     paired_wrong_modes = parse_wrong_modes(cli_args.paired_wrong_modes)
+    paired_wrong_weights = parse_paired_wrong_weights(
+        cli_args.paired_wrong_weights,
+        paired_wrong_modes,
+    )
     print(f"paired_wrong_ref_loss: {cli_args.paired_wrong_ref_loss}")
     print(f"paired_wrong_modes: {','.join(paired_wrong_modes)}")
+    print(
+        "paired_wrong_weights: "
+        + ",".join(f"{mode}={paired_wrong_weights[mode]:g}" for mode in paired_wrong_modes)
+    )
     print(f"lambda_wrong_ref: {cli_args.lambda_wrong_ref}")
 
     fixed_noise = None
@@ -561,6 +605,7 @@ def main():
         paired_wrong_loss = torch.zeros((), device=target_images.device, dtype=objective_loss.dtype)
         paired_wrong_log = []
         if cli_args.paired_wrong_ref_loss:
+            paired_wrong_weight_sum = 0.0
             for wrong_mode in paired_wrong_modes:
                 wrong_inputs = make_retrieval_inputs_for_mode(
                     batch["retrieval_inputs"],
@@ -588,12 +633,16 @@ def main():
                     reduction="mean",
                 )
                 wrong_diff = F.mse_loss(wrong_pred.float(), noise.float(), reduction="mean")
-                paired_wrong_loss = paired_wrong_loss + wrong_objective
+                mode_weight = paired_wrong_weights[wrong_mode]
+                paired_wrong_loss = paired_wrong_loss + mode_weight * wrong_objective
+                paired_wrong_weight_sum += mode_weight
                 paired_wrong_totals[wrong_mode]["count"] += 1
                 paired_wrong_totals[wrong_mode]["objective"] += wrong_objective.item()
                 paired_wrong_totals[wrong_mode]["diff"] += wrong_diff.item()
-                paired_wrong_log.append(f"{wrong_mode}:{wrong_objective.item():.6f}")
-            paired_wrong_loss = paired_wrong_loss / len(paired_wrong_modes)
+                paired_wrong_log.append(
+                    f"{wrong_mode}:{wrong_objective.item():.6f}*w{mode_weight:g}"
+                )
+            paired_wrong_loss = paired_wrong_loss / paired_wrong_weight_sum
         alpha_reg = adapter.alpha.abs()
         loss = (
             objective_loss
@@ -801,6 +850,7 @@ def main():
         "wrong_ref_target": cli_args.wrong_ref_target,
         "paired_wrong_ref_loss": cli_args.paired_wrong_ref_loss,
         "paired_wrong_modes": paired_wrong_modes,
+        "paired_wrong_weights": paired_wrong_weights,
         "lambda_wrong_ref": cli_args.lambda_wrong_ref,
         "mode_summary": mode_summary,
         "paired_wrong_summary": paired_wrong_summary,
